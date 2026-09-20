@@ -6,41 +6,56 @@ Usage:
         --top-name top --out top.v
 
 Connection CSV format (see examples/connections.csv):
-    type,col1,col2,col3,col4,col5
-    INSTANCE,<instance_name>,<module_name>,,,
-    NET,<net_name>,<instance_name or TOP>,<port_name>,<net bits (optional)>,<port bits (optional)>
+    type,col1,col2,col3,col4,col5,col6
+    INSTANCE,<instance_name>,<module_name>,,,,
+    NET,<in_instance or TOP>,<in_port>,<in_bits (optional)>,<out_instance, TOP, or CONST>,<out_port, or a literal for CONST>,<out_bits (optional)>
 
 - An INSTANCE row declares one submodule instance.
-- A NET row declares one endpoint of a net: which instance/port it attaches to.
-  All NET rows sharing the same net name are tied together.
-  Use instance name "TOP" to expose that endpoint as a port of the generated
-  top module (its direction/width are inferred from the submodule port(s)
-  it connects to).
+- A NET row declares one point-to-point connection: the input (consuming)
+  side is col1-col3, the output (driving) side is col4-col6. There is no
+  net-name column. Instead, every real instance port - on either side of
+  any row - gets its own dedicated wire named "w_<instance>_<port>"
+  (declared once, the first time that port is referenced), and each row
+  emits one `assign` statement linking the input side's wire (or slice of
+  it) to the output side's wire/literal/TOP-port (or slice of it). Fan-out
+  (one driver feeding several inputs) and fan-in/bus-packing (several
+  different drivers each feeding a different bit range of one input port)
+  both just fall out of repeating a row with one side unchanged - the
+  shared port's wire is simply referenced by more than one assign. Use
+  instance name "TOP" on the input side to expose that connection as an
+  output port of the generated top module, or on the output side to expose
+  it as an input port (both directions are determined directly by which
+  side "TOP" appears on, not inferred).
 
-Ports on the same net do not need to be the same width. When they differ,
-the net is declared at the widest connected port's width, and each endpoint
-is connected as-is: Verilog automatically zero-extends a narrower connection
-or truncates a wider one, aligned at the LSB (this is standard IEEE
-1364/1800 port-connection behavior, e.g. an 8-bit output connecting to a
-32-bit input pads the upper 24 bits with 0). To place a signal at specific
-bits of the net instead of the LSB-aligned default (e.g. packing a byte
-into the upper half of a word), set the optional 5th column ("bits", the
-net's own bit range) on that NET row to an explicit part-select such as
-"[23:16]" or "[3]".
+Ports on either side do not need to be the same width. When they differ,
+the input side's own wire (sized to its own declared RTL width) and the
+output side's own wire are joined via a bare `assign`, and Verilog
+automatically zero-extends a narrower connection or truncates a wider one,
+aligned at the LSB (standard IEEE 1364/1800 assignment behavior). To place
+a connection at a specific position of the input port's wire instead of
+the LSB-aligned default, set col3 ("in_bits") to an explicit part-select
+such as "[23:16]" or "[3]" - this is what every row sharing an input side
+must set (to distinct, non-overlapping ranges) for bus packing to land
+each contribution correctly.
 
-To instead take an arbitrary slice out of a wide port itself (e.g. only
-bits [23:16] of a 32-bit output bus) and place that slice anywhere on the
-net, set the optional 6th column ("port_bits") to that port-side part-select.
-Verilog can't slice a formal port name in an instance connection, so when
-"port_bits" is given the generator connects the port to an internal helper
-wire in full and adds an `assign` statement linking the requested slice of
-that helper wire to the requested slice of the net (net-side slice from
-"bits", defaulting to the LSBs when blank).
+To instead take an arbitrary slice out of a wide *output* port itself
+(e.g. only bits [23:16] of a 32-bit output bus), set col6 ("out_bits") to
+that output-side part-select - since every real port already has its own
+full-width wire, this is just `assign <input target> = w_<out_inst>_<out_port>[out_bits];`.
+
+To tie a connection to a fixed value instead of a real output port (e.g.
+tie off unused lanes of a packed bus, or a constant status bit), use the
+special instance name "CONST" on the output side: col5 holds a Verilog
+literal (such as "4'hA" or "1'b1") instead of a port name. col3
+("in_bits") is then required, since a constant has nowhere else to read
+its placement from. A real single-bit port needs no special handling at
+all: it already places at an arbitrary position the same way any port
+does, via the normal "in_bits" column.
 
 Pass --report <path> to also write a CSV listing every instance port and
 its status: UNCONNECTED (no NET row at all), PARTIALLY_DRIVEN (the port
 reads a net that has bits nothing ever drives, e.g. only part of a wide
-bus is fed by "bits"/"port_bits" endpoints elsewhere), or CONNECTED.
+bus is fed by "in_bits"/"out_bits" endpoints elsewhere), or CONNECTED.
 UNCONNECTED and PARTIALLY_DRIVEN ports are listed first, then a blank
 line, then fully CONNECTED ports.
 """
@@ -53,6 +68,7 @@ import sys
 from dataclasses import dataclass
 
 TOP_INSTANCE = "TOP"
+CONST_INSTANCE = "CONST"
 DIRECTIONS = ("input", "output", "inout")
 
 
@@ -88,13 +104,6 @@ def parse_bit_range(bits_spec):
     if m:
         return (int(m.group(1)), int(m.group(1)))
     raise ValueError("Invalid bits spec %r (expected e.g. [23:16] or [3])" % bits_spec)
-
-
-def bits_spec_width(bits_spec):
-    """Number of bits implied by a connection-CSV bits spec, or None for a
-    blank spec."""
-    r = parse_bit_range(bits_spec)
-    return (r[1] - r[0] + 1) if r else None
 
 
 def format_bit_set(bits):
@@ -278,8 +287,12 @@ def load_module_library(rtl_paths, recursive):
 
 
 def read_connections(conn_path):
+    """Read INSTANCE rows and raw point-to-point NET rows from the
+    connection CSV. Returns (instances, net_rows) where net_rows is a list
+    of (in_inst, in_port, in_bits, out_inst, out_port, out_bits) tuples -
+    one row per NET line, passed directly to generate_top()."""
     instances = {}   # instance_name -> module_name
-    nets = {}         # net_name -> [(instance_or_TOP, port_name, net_bits, port_bits), ...]
+    net_rows = []
     with open(conn_path, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
@@ -291,28 +304,42 @@ def read_connections(conn_path):
             col3 = (row.get("col3") or "").strip()
             col4 = (row.get("col4") or "").strip()
             col5 = (row.get("col5") or "").strip()
+            col6 = (row.get("col6") or "").strip()
             if rtype == "INSTANCE":
                 instance_name, module_name = col1, col2
                 if instance_name in instances:
                     raise ValueError("Duplicate instance name: %s" % instance_name)
                 instances[instance_name] = module_name
             elif rtype == "NET":
-                net_name, inst_name, port_name, net_bits, port_bits = col1, col2, col3, col4, col5
-                nets.setdefault(net_name, []).append((inst_name, port_name, net_bits, port_bits))
+                # NET,<in_inst or TOP>,<in_port>,<in_bits>,<out_inst, TOP, or CONST>,<out_port or literal>,<out_bits>
+                in_inst, in_port, in_bits, out_inst, out_port, out_bits = (
+                    col1, col2, col3, col4, col5, col6)
+                if not in_inst or not in_port:
+                    raise ValueError("NET row is missing its input instance/port: %r" % (row,))
+                if not out_inst or not out_port:
+                    raise ValueError("NET row is missing its output instance/port: %r" % (row,))
+                if in_inst == CONST_INSTANCE:
+                    raise ValueError(
+                        "CONST can only be used on the output (driving) side of "
+                        "a NET row, not the input side: %r" % (row,))
+                net_rows.append((in_inst, in_port, in_bits, out_inst, out_port, out_bits))
             else:
                 raise ValueError("Unknown row type: %r" % rtype)
-    return instances, nets
+    return instances, net_rows
 
 
-def generate_top(top_name, instances, nets, library):
+def generate_top(top_name, instances, net_rows, library):
     top_ports = []       # list of Port for the generated module header
     wire_decls = []       # list of (width, wire_name)
     conn_signal = {}      # (instance_name, port_name) -> signal name to use
+    assign_stmts = []      # list of Verilog "assign ...;" statement strings
+    declared_ports = set()   # (instance, port) real ports already given a w_<inst>_<port> wire
+    partial_driven = {}      # (instance, port) -> (driven_desc, undriven_desc)
 
     def resolve_port(inst_name, port_name):
         module_name = instances.get(inst_name)
         if module_name is None:
-            raise ValueError("NET references unknown instance %r" % inst_name)
+            raise ValueError("NET row references unknown instance %r" % inst_name)
         ports = library.get(module_name)
         if ports is None:
             raise ValueError("Module %r (instance %r) not found in RTL library"
@@ -323,155 +350,178 @@ def generate_top(top_name, instances, nets, library):
         raise ValueError("Module %r has no port %r (instance %r)"
                           % (module_name, port_name, inst_name))
 
-    assign_stmts = []      # list of Verilog "assign ...;" statement strings
-    shadow_declared = set()  # (instance, port) pairs already given a helper wire
-    partial_driven = {}      # (instance, port) -> format_bit_set() of undriven bits it reads
+    def endpoint_expr(signal_base, bits):
+        return "%s%s" % (signal_base, bits) if bits else signal_base
 
-    def endpoint_expr(signal_base, net_bits):
-        return "%s%s" % (signal_base, net_bits) if net_bits else signal_base
+    def ensure_port_wire(inst_name, port):
+        """Declare (once) a dedicated wire w_<inst>_<port>, sized to that
+        port's own width, and connect the instance's port to it bare."""
+        key = (inst_name, port.name)
+        wname = "w_%s_%s" % (inst_name, port.name)
+        if key not in declared_ports:
+            width_bits = bit_count(port.width)
+            wstr = "[%d:0]" % (width_bits - 1) if (width_bits or 0) > 1 else ""
+            wire_decls.append((wstr, wname))
+            declared_ports.add(key)
+            conn_signal[key] = wname
+        return wname
 
-    def endpoint_width(net_bits, port_bits, port):
-        """Minimum net width (bit count, from net bit 0) this endpoint requires."""
-        if net_bits:
-            # net_bits addresses an absolute position on the net, so the net
-            # must be at least as wide as the highest index referenced.
-            return parse_bit_range(net_bits)[1] + 1
-        if port_bits:
-            # No net_bits given: this port-side slice defaults to the net's
-            # LSBs, so it only needs its own span width.
-            return bits_spec_width(port_bits)
-        return bit_count(port.width)
+    # --- pass 1: TOP ports fed by something inside (out_inst == TOP) ---
+    top_as_producer = {}
+    for in_inst, in_port, in_bits, out_inst, out_port, out_bits in net_rows:
+        if out_inst == TOP_INSTANCE:
+            top_as_producer.setdefault(out_port, []).append(
+                (in_inst, in_port, in_bits, out_bits))
 
-    def endpoint_range(net_bits, port_bits, port):
-        """Inclusive (lo, hi) bit range this endpoint occupies on the net."""
-        r = parse_bit_range(net_bits)
-        if r:
-            return r
-        w = endpoint_width(net_bits, port_bits, port)
-        return (0, w - 1) if w is not None else None  # unknown: assume full width
+    for top_port_name, uses in top_as_producer.items():
+        max_bits = 1
+        for in_inst, in_port, in_bits, out_bits in uses:
+            if out_bits:
+                max_bits = max(max_bits, parse_bit_range(out_bits)[1] + 1)
+            elif in_bits:
+                max_bits = max(max_bits, parse_bit_range(in_bits)[1] + 1)
+            elif in_inst != TOP_INSTANCE:
+                max_bits = max(max_bits, bit_count(resolve_port(in_inst, in_port).width) or 1)
+        width_str = "[%d:0]" % (max_bits - 1) if max_bits > 1 else ""
+        top_ports.append(Port(top_port_name, "input", width_str))
 
-    for net_name, endpoints in nets.items():
-        internal = [(i, p, nb, pb) for i, p, nb, pb in endpoints if i != TOP_INSTANCE]
-        external = [(i, p, nb, pb) for i, p, nb, pb in endpoints if i == TOP_INSTANCE]
+    # --- pass 2: group rows by consumer (input-side) identity ---
+    consumer_rows = {}
+    for row in net_rows:
+        in_inst, in_port = row[0], row[1]
+        key = ("TOP", in_port) if in_inst == TOP_INSTANCE else ("PORT", in_inst, in_port)
+        consumer_rows.setdefault(key, []).append(row)
 
-        resolved_internal = [(i, p, nb, pb, resolve_port(i, p)) for i, p, nb, pb in internal]
-
-        for i, p, nb, pb, port in resolved_internal:
-            if not pb:
-                continue
-            port_bit_count = bit_count(port.width)
-            pb_range = parse_bit_range(pb)
-            if port_bit_count is not None and pb_range and pb_range[1] >= port_bit_count:
-                raise ValueError(
-                    "Endpoint %s.%s: port_bits %r exceeds the port's own width %s "
-                    "(%d bits)" % (i, p, pb, port.width or "1 bit", port_bit_count))
-
-        any_bits = any(nb or pb for _, _, nb, pb in internal)
-        distinct_widths = {port.width for _, _, _, _, port in resolved_internal}
-
-        if not any_bits and len(distinct_widths) <= 1:
-            width = next(iter(distinct_widths), "")
+    for key, rows in consumer_rows.items():
+        is_top = key[0] == "TOP"
+        if is_top:
+            top_port_name = key[1]
+            consumer_port = None
+            own_width = None
         else:
-            required = [(i, p, nb, pb, port, endpoint_width(nb, pb, port))
-                        for i, p, nb, pb, port in resolved_internal]
-            numeric_bits = [r for *_, r in required if r is not None]
-            if not numeric_bits:
+            _, in_inst, in_port = key
+            consumer_port = resolve_port(in_inst, in_port)
+            if consumer_port.direction == "output":
                 raise ValueError(
-                    "Net %r mixes port widths that can't be auto-resolved (%s); "
-                    "give each endpoint an explicit 'bits' or 'port_bits' column"
-                    % (net_name, ", ".join(
-                        "%s.%s=%s" % (i, p, port.width or "1 bit")
-                        for i, p, _, _, port in resolved_internal)))
-            max_bits = max(numeric_bits)
-            width = "[%d:0]" % (max_bits - 1) if max_bits > 1 else ""
-            auto_mismatched = [(i, p, port.width) for i, p, nb, pb, port, r in required
-                                if not nb and not pb and r is not None and r != max_bits]
-            if auto_mismatched:
-                print("Warning: net %r auto-extends/truncates at the LSB for %s "
-                      "(net declared as %s); add an explicit 'bits' column to "
-                      "control placement instead"
-                      % (net_name, ", ".join(
-                          "%s.%s=%s" % (i, p, w or "1 bit") for i, p, w in auto_mismatched),
-                         width or "1 bit"),
-                      file=sys.stderr)
+                    "%s.%s is declared 'output' in the RTL but is used on "
+                    "the input side of a NET row" % (in_inst, in_port))
+            own_width = bit_count(consumer_port.width)
+            consumer_wire = ensure_port_wire(in_inst, consumer_port)
 
-        drivers = [(i, p, nb, pb, port) for i, p, nb, pb, port in resolved_internal
-                   if port.direction in ("output", "inout")]
-        if len(drivers) > 1:
-            ranges = [endpoint_range(nb, pb, port) for _, _, nb, pb, port in drivers]
-            overlapping = False
-            for a in range(len(ranges)):
-                for c in range(a + 1, len(ranges)):
-                    ra, rc = ranges[a], ranges[c]
-                    if ra is None or rc is None or not (ra[1] < rc[0] or ra[0] > rc[1]):
-                        overlapping = True
-            if overlapping:
-                print("Warning: net %r has multiple driving ports that overlap (%s)"
-                      % (net_name, ", ".join("%s.%s" % (i, p) for i, p, _, _, _ in drivers)),
-                      file=sys.stderr)
-
-        net_width_bits = bit_count(width)
-        externally_supplied = bool(external) and not drivers
-        if net_width_bits and not externally_supplied:
-            driven_bits = set()
-            for _, _, nb, _, _ in drivers:
-                # A bare (no net_bits) driver zero-extends to cover the whole
-                # net (verified against iverilog); an explicit net_bits slice
-                # drives only that range.
-                r = parse_bit_range(nb) if nb else (0, net_width_bits - 1)
-                driven_bits.update(range(r[0], r[1] + 1))
-            undriven_bits = set(range(net_width_bits)) - driven_bits
-            if undriven_bits:
-                for i, p, nb, pb, port in resolved_internal:
-                    if port.direction == "output":
-                        continue
-                    r = endpoint_range(nb, pb, port)
-                    if r is None:
-                        continue
-                    read_bits = set(range(r[0], r[1] + 1))
-                    gap = read_bits & undriven_bits
-                    if gap:
-                        driven_part = read_bits - gap
-                        partial_driven[(i, p)] = (
-                            format_bit_set(driven_part) if driven_part else "",
-                            format_bit_set(gap),
-                        )
-                        module_name = instances.get(i, "?")
-                        print("Warning: %s.%s (instance %s) reads net %r but bit(s) %s "
-                              "of it are never driven"
-                              % (module_name, p, i, net_name, format_bit_set(gap)),
-                              file=sys.stderr)
-
-        if external:
-            direction = drivers[0][4].direction if drivers else "input"
-            for _, port_name, _, _ in external:
-                top_ports.append(Port(port_name, direction, width))
-                # if multiple TOP endpoints share a net with a different
-                # port name, alias them to the same net_name signal.
-        elif internal:
-            # declare a wire even for a single dangling endpoint so the
-            # instance can still connect to something.
-            wire_decls.append((width, net_name))
-
-        for i, p, nb, pb, port in resolved_internal:
-            if not pb:
-                conn_signal[(i, p)] = endpoint_expr(net_name, nb)
-                continue
-            # Verilog can't slice a formal port name in an instance
-            # connection, so route it through a full-width helper wire and
-            # link the requested slices with a separate assign statement.
-            shadow_name = "__slice_%s_%s" % (i, p)
-            if (i, p) not in shadow_declared:
-                port_bit_count = bit_count(port.width)
-                shadow_width = "[%d:0]" % (port_bit_count - 1) if (port_bit_count or 0) > 1 else ""
-                wire_decls.append((shadow_width, shadow_name))
-                shadow_declared.add((i, p))
-            conn_signal[(i, p)] = shadow_name
-            net_target = endpoint_expr(net_name, nb)
-            if port.direction in ("output", "inout"):
-                assign_stmts.append("assign %s = %s%s;" % (net_target, shadow_name, pb))
+        resolved = []  # (row, (lo, hi), producer_expr, out_inst)
+        for row in rows:
+            in_inst, in_port, in_bits, out_inst, out_port, out_bits = row
+            if out_inst == CONST_INSTANCE:
+                if not in_bits:
+                    raise ValueError(
+                        "CONST endpoint (value %r) requires an explicit input-side "
+                        "'bits' column specifying where to place it" % out_port)
+                if out_bits:
+                    raise ValueError(
+                        "CONST endpoint (value %r): output-side bits isn't "
+                        "meaningful for a constant; leave col6 blank" % out_port)
+                producer_expr = out_port
+                producer_default_width = None
+            elif out_inst == TOP_INSTANCE:
+                producer_expr = endpoint_expr(out_port, out_bits)
+                producer_default_width = None
             else:
-                assign_stmts.append("assign %s%s = %s;" % (shadow_name, pb, net_target))
+                producer_port = resolve_port(out_inst, out_port)
+                if producer_port.direction == "input":
+                    raise ValueError(
+                        "%s.%s is declared 'input' in the RTL but is used on "
+                        "the output side of a NET row" % (out_inst, out_port))
+                if out_bits:
+                    pbc = bit_count(producer_port.width)
+                    pr = parse_bit_range(out_bits)
+                    if pbc is not None and pr and pr[1] >= pbc:
+                        raise ValueError(
+                            "Endpoint %s.%s: output-side bits %r exceeds the port's "
+                            "own width %s (%d bits)"
+                            % (out_inst, out_port, out_bits, producer_port.width or "1 bit", pbc))
+                producer_wire = ensure_port_wire(out_inst, producer_port)
+                producer_expr = endpoint_expr(producer_wire, out_bits)
+                producer_default_width = bit_count(producer_port.width)
+
+            if in_bits:
+                target_range = parse_bit_range(in_bits)
+            elif own_width:
+                target_range = (0, own_width - 1)
+            elif producer_default_width:
+                target_range = (0, producer_default_width - 1)
+            else:
+                target_range = (0, 0)
+
+            if not is_top and own_width is not None and target_range[1] >= own_width:
+                raise ValueError(
+                    "%s.%s: input-side bits %r exceed the port's own width %s (%d bits)"
+                    % (in_inst, in_port, in_bits, consumer_port.width or "1 bit", own_width))
+
+            resolved.append((row, target_range, producer_expr, out_inst, producer_default_width))
+
+        if is_top:
+            max_bits = max(r[1][1] + 1 for r in resolved)
+            width_str = "[%d:0]" % (max_bits - 1) if max_bits > 1 else ""
+            top_ports.append(Port(top_port_name, "output", width_str))
+            target_base = top_port_name
+            final_width = max_bits
+        else:
+            target_base = consumer_wire
+            final_width = own_width
+
+        auto_mismatched = [
+            (r[0][3], r[0][4], pdw) for r in resolved
+            for pdw in [r[4]]
+            if not r[0][2] and not r[0][5] and pdw is not None and pdw != final_width
+        ]
+        if auto_mismatched:
+            target_label = top_port_name if is_top else "%s.%s" % (in_inst, in_port)
+            print("Warning: %s auto-extends/truncates at the LSB for %s "
+                  "(declared %d bits wide); add an explicit input-side 'bits' "
+                  "column to control placement instead"
+                  % (target_label, ", ".join(
+                      "%s.%s=%d bits" % (oi, op, pdw) for oi, op, pdw in auto_mismatched),
+                     final_width),
+                  file=sys.stderr)
+
+        ranges = [r[1] for r in resolved]
+        if len(ranges) > 1:
+            overlapping = any(
+                not (ranges[a][1] < ranges[b][0] or ranges[b][1] < ranges[a][0])
+                for a in range(len(ranges)) for b in range(a + 1, len(ranges)))
+            if overlapping:
+                labels = ["CONST(%s)" % r[0][4] if r[3] == CONST_INSTANCE
+                          else "%s.%s" % (r[0][3], r[0][4]) for r in resolved]
+                target_label = top_port_name if is_top else "%s.%s" % (in_inst, in_port)
+                print("Warning: %s has multiple drivers that overlap (%s)"
+                      % (target_label, ", ".join(labels)), file=sys.stderr)
+
+        if not is_top and own_width:
+            has_external = any(oi == TOP_INSTANCE for _, _, _, oi, _ in resolved)
+            has_internal = any(oi != TOP_INSTANCE for _, _, _, oi, _ in resolved)
+            externally_supplied = has_external and not has_internal
+            if not externally_supplied:
+                driven_bits = set()
+                for _, (lo, hi), _, _, _ in resolved:
+                    driven_bits.update(range(lo, hi + 1))
+                undriven_bits = set(range(own_width)) - driven_bits
+                if undriven_bits:
+                    driven_part = driven_bits & set(range(own_width))
+                    partial_driven[(in_inst, in_port)] = (
+                        format_bit_set(driven_part) if driven_part else "",
+                        format_bit_set(undriven_bits),
+                    )
+                    module_name = instances.get(in_inst, "?")
+                    print("Warning: %s.%s (instance %s) reads w_%s_%s but bit(s) %s "
+                          "of it are never driven"
+                          % (module_name, in_port, in_inst, in_inst, in_port,
+                             format_bit_set(undriven_bits)),
+                          file=sys.stderr)
+
+        for row, (lo, hi), producer_expr, out_inst, _ in resolved:
+            in_bits_row = row[2]
+            target_expr = endpoint_expr(target_base, in_bits_row)
+            assign_stmts.append("assign %s = %s;" % (target_expr, producer_expr))
 
     lines = []
     lines.append("module %s (" % top_name)
@@ -581,8 +631,8 @@ def main():
     args = ap.parse_args()
 
     library = load_module_library(args.rtl, args.recursive)
-    instances, nets = read_connections(args.conn)
-    verilog, report = generate_top(args.top_name, instances, nets, library)
+    instances, net_rows = read_connections(args.conn)
+    verilog, report = generate_top(args.top_name, instances, net_rows, library)
 
     if args.out:
         with open(args.out, "w") as f:

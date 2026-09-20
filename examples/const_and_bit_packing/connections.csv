@@ -1,6 +1,10 @@
 type,col1,col2,col3,col4,col5,col6
 INSTANCE,u_a,wide_src_a,,,,
 INSTANCE,u_b,wide_src_b,,,,
+INSTANCE,u_flag,flag_src,,,,
 INSTANCE,u_sink,wide_sink,,,,
 NET,u_sink,packed_word,[15:8],u_a,data,[23:16]
 NET,u_sink,packed_word,[27:16],u_b,data,[15:4]
+NET,u_sink,packed_word,[31:28],CONST,4'hA,
+NET,u_sink,packed_word,[7],u_flag,flag,
+NET,u_sink,packed_word,[6:0],CONST,7'h55,
