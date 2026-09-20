@@ -1,0 +1,3 @@
+Warning: cpu_core.we (instance u_cpu) is unconnected
+Warning: cpu_core.status (instance u_cpu) is unconnected
+Warning: memory.we (instance u_mem) is unconnected

@@ -50,6 +50,10 @@ python3 verilog_top_gen.py \
   `--log`는 그걸 파일로 **추가** 저장하는 용도입니다. 실패했을 때도 그때까지 모인
   경고들과 함께 `Error: ...` 줄이 파일에 남습니다 (에러 자체는 기존처럼 콘솔에도
   전체 트레이스백과 함께 출력되며 종료 코드는 0이 아닙니다).
+  실제 예시는 `examples/width_mismatch/warnings.log`(자동 LSB 정렬 경고 1개),
+  `examples/unconnected_report/warnings.log`(미연결 포트 경고 3개),
+  `examples/port_bits_packing/warnings.log`(PARTIALLY_DRIVEN 경고 1개) 참고 —
+  각각 콘솔에 출력되는 것과 동일한 문구가 파일에도 그대로 한 줄씩 저장됩니다.
 
 ### 연결정보 CSV 형식
 

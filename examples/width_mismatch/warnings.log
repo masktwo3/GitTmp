@@ -1,0 +1,1 @@
+Warning: u_sink.status_word auto-extends/truncates at the LSB for u_src.status=8 bits (declared 32 bits wide); add an explicit input-side 'bits' column to control placement instead
