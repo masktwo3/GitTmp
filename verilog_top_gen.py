@@ -72,6 +72,12 @@ reads a net that has bits nothing ever drives, e.g. only part of a wide
 bus is fed by "in_bits"/"out_bits" endpoints elsewhere), or CONNECTED.
 UNCONNECTED and PARTIALLY_DRIVEN ports are listed first, then a blank
 line, then fully CONNECTED ports.
+
+Every warning above is printed to stderr as it's found, same as always.
+Pass --log <path> to also collect them into a plain text file (one per
+line), so they aren't lost if only stdout/--out is captured. If
+generation fails, the file still gets written with whatever warnings
+were collected before the failure, plus a final "Error: ..." line.
 """
 import argparse
 import csv
@@ -134,6 +140,14 @@ def format_bit_set(bits):
     runs.append((start, prev))
     return ",".join("[%d]" % lo if lo == hi else "[%d:%d]" % (hi, lo)
                      for lo, hi in runs)
+
+
+def emit_warning(msg, warnings):
+    """Print a warning to stderr and, if a list was given, also collect it
+    (so --log can write every warning/error to a file, not just stderr)."""
+    print(msg, file=sys.stderr)
+    if warnings is not None:
+        warnings.append(msg)
 
 
 def strip_comments(text):
@@ -287,15 +301,15 @@ def collect_source_files(rtl_paths, recursive):
     return unique
 
 
-def load_module_library(rtl_paths, recursive):
+def load_module_library(rtl_paths, recursive, warnings=None):
     library = {}
     for path in collect_source_files(rtl_paths, recursive):
         with open(path, "r") as f:
             text = f.read()
         for name, ports in parse_verilog_modules(text).items():
             if name in library:
-                print("Warning: module %r found in multiple files; using %s"
-                      % (name, path), file=sys.stderr)
+                emit_warning("Warning: module %r found in multiple files; using %s"
+                             % (name, path), warnings)
             library[name] = ports
     return library
 
@@ -365,7 +379,7 @@ class _InoutUnionFind:
             self.parent[ra] = rb
 
 
-def generate_top(top_name, instances, net_rows, library):
+def generate_top(top_name, instances, net_rows, library, warnings=None):
     top_ports = []       # list of Port for the generated module header
     wire_decls = []       # list of (width, wire_name)
     conn_signal = {}      # (instance_name, port_name) -> signal name to use
@@ -507,12 +521,13 @@ def generate_top(top_name, instances, net_rows, library):
                 sig = canonical_signal
             else:
                 sig = "%s[%d:0]" % (canonical_signal, own_width - 1)
-                print("Warning: %s.%s (inout, %d bits) auto-connects to the "
-                      "low %d bits of the shared %d-bit inout net %s; add an "
-                      "explicit input-side 'bits' column to control "
-                      "placement instead"
-                      % (inst, port, own_width, own_width, canonical_width, canonical_signal),
-                      file=sys.stderr)
+                emit_warning(
+                    "Warning: %s.%s (inout, %d bits) auto-connects to the "
+                    "low %d bits of the shared %d-bit inout net %s; add an "
+                    "explicit input-side 'bits' column to control "
+                    "placement instead"
+                    % (inst, port, own_width, own_width, canonical_width, canonical_signal),
+                    warnings)
             conn_signal[(inst, port)] = sig
             declared_ports.add((inst, port))
 
@@ -626,13 +641,14 @@ def generate_top(top_name, instances, net_rows, library):
         ]
         if auto_mismatched:
             target_label = top_port_name if is_top else "%s.%s" % (in_inst, in_port)
-            print("Warning: %s auto-extends/truncates at the LSB for %s "
-                  "(declared %d bits wide); add an explicit input-side 'bits' "
-                  "column to control placement instead"
-                  % (target_label, ", ".join(
-                      "%s.%s=%d bits" % (oi, op, pdw) for oi, op, pdw in auto_mismatched),
-                     final_width),
-                  file=sys.stderr)
+            emit_warning(
+                "Warning: %s auto-extends/truncates at the LSB for %s "
+                "(declared %d bits wide); add an explicit input-side 'bits' "
+                "column to control placement instead"
+                % (target_label, ", ".join(
+                    "%s.%s=%d bits" % (oi, op, pdw) for oi, op, pdw in auto_mismatched),
+                   final_width),
+                warnings)
 
         ranges = [r[1] for r in resolved]
         if len(ranges) > 1:
@@ -643,8 +659,8 @@ def generate_top(top_name, instances, net_rows, library):
                 labels = ["CONST(%s)" % r[0][4] if r[3] == CONST_INSTANCE
                           else "%s.%s" % (r[0][3], r[0][4]) for r in resolved]
                 target_label = top_port_name if is_top else "%s.%s" % (in_inst, in_port)
-                print("Warning: %s has multiple drivers that overlap (%s)"
-                      % (target_label, ", ".join(labels)), file=sys.stderr)
+                emit_warning("Warning: %s has multiple drivers that overlap (%s)"
+                             % (target_label, ", ".join(labels)), warnings)
 
         if not is_top and own_width:
             has_external = any(oi == TOP_INSTANCE for _, _, _, oi, _ in resolved)
@@ -662,11 +678,12 @@ def generate_top(top_name, instances, net_rows, library):
                         format_bit_set(undriven_bits),
                     )
                     module_name = instances.get(in_inst, "?")
-                    print("Warning: %s.%s (instance %s) reads w_%s_%s but bit(s) %s "
-                          "of it are never driven"
-                          % (module_name, in_port, in_inst, in_inst, in_port,
-                             format_bit_set(undriven_bits)),
-                          file=sys.stderr)
+                    emit_warning(
+                        "Warning: %s.%s (instance %s) reads w_%s_%s but bit(s) %s "
+                        "of it are never driven"
+                        % (module_name, in_port, in_inst, in_inst, in_port,
+                           format_bit_set(undriven_bits)),
+                        warnings)
 
         for row, (lo, hi), producer_expr, out_inst, _ in resolved:
             in_bits_row = row[2]
@@ -708,8 +725,8 @@ def generate_top(top_name, instances, net_rows, library):
             connected = sig is not None
             driven_bits_desc = undriven_bits_desc = ""
             if not connected:
-                print("Warning: %s.%s (instance %s) is unconnected"
-                      % (module_name, port.name, inst_name), file=sys.stderr)
+                emit_warning("Warning: %s.%s (instance %s) is unconnected"
+                             % (module_name, port.name, inst_name), warnings)
                 sig = ""
                 status = "UNCONNECTED"
             elif (inst_name, port.name) in partial_driven:
@@ -778,11 +795,24 @@ def main():
                      help="Write a CSV connection report (instance,module,port,"
                           "direction,width,signal,status) listing every instance "
                           "port as CONNECTED or UNCONNECTED")
+    ap.add_argument("--log",
+                     help="Also write every warning (and, if generation fails, "
+                          "the error) to this file, one per line -- in "
+                          "addition to printing them to stderr as usual")
     args = ap.parse_args()
 
-    library = load_module_library(args.rtl, args.recursive)
-    instances, net_rows = read_connections(args.conn)
-    verilog, report = generate_top(args.top_name, instances, net_rows, library)
+    warnings = [] if args.log else None
+    try:
+        library = load_module_library(args.rtl, args.recursive, warnings)
+        instances, net_rows = read_connections(args.conn)
+        verilog, report = generate_top(args.top_name, instances, net_rows, library, warnings)
+    except Exception as exc:
+        if args.log:
+            with open(args.log, "w") as f:
+                for w in warnings:
+                    f.write(w + "\n")
+                f.write("Error: %s\n" % exc)
+        raise
 
     if args.out:
         with open(args.out, "w") as f:
@@ -797,6 +827,14 @@ def main():
         partially_driven = sum(1 for r in report if r["status"] == "PARTIALLY_DRIVEN")
         print("Wrote %s (%d/%d ports unconnected, %d partially driven)"
               % (args.report, unconnected, len(report), partially_driven), file=sys.stderr)
+
+    if args.log:
+        with open(args.log, "w") as f:
+            for w in warnings:
+                f.write(w + "\n")
+        print("Wrote %s (%d warning%s)"
+              % (args.log, len(warnings), "" if len(warnings) == 1 else "s"),
+              file=sys.stderr)
 
 
 if __name__ == "__main__":
