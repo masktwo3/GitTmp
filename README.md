@@ -25,6 +25,8 @@ python3 verilog_top_gen.py \
 - `--report`: (선택) top 모듈 생성 후, 모든 인스턴스의 모든 포트가 연결됐는지(`CONNECTED`)
   안 됐는지(`UNCONNECTED`)를 확인해 CSV 파일로 저장합니다. 컬럼:
   `instance,module,port,direction,width,signal,status` (`status`가 마지막 컬럼).
+  파일 안에서는 헤더 다음 **미연결(UNCONNECTED) 포트 목록 → 빈 줄 → 연결(CONNECTED)
+  포트 목록** 순서로 작성되어, 미연결 포트를 파일 맨 위에서 바로 확인할 수 있습니다.
   전부 연결된 예시는 `examples/connection_report.csv`, 일부러 몇 개를 빼서
   `UNCONNECTED`가 나오게 만든 예시는 `examples/unconnected_report/` 참고.
   연결이 안 된 포트가 있으면 콘솔에도 경고가 함께 출력됩니다.

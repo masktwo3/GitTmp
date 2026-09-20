@@ -29,7 +29,8 @@ that NET row to an explicit part-select such as "[23:16]" or "[3]".
 
 Pass --report <path> to also write a CSV listing every instance port and
 whether it ended up CONNECTED or UNCONNECTED, for reviewing the result of
-a connection run.
+a connection run. UNCONNECTED ports are listed first, then a blank line,
+then CONNECTED ports.
 """
 import argparse
 import csv
@@ -421,13 +422,23 @@ def generate_top(top_name, instances, nets, library):
 
 
 def write_connection_report(report, path):
-    """Write a CSV report of every instance port's connection status."""
+    """Write a CSV report of every instance port's connection status, listing
+    UNCONNECTED ports first, then a blank line, then CONNECTED ports."""
+    def row(r):
+        return [r["instance"], r["module"], r["port"], r["direction"],
+                r["width"], r["signal"], r["status"]]
+
+    unconnected = [r for r in report if r["status"] == "UNCONNECTED"]
+    connected = [r for r in report if r["status"] == "CONNECTED"]
+
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["instance", "module", "port", "direction", "width", "signal", "status"])
-        for r in report:
-            writer.writerow([r["instance"], r["module"], r["port"], r["direction"],
-                              r["width"], r["signal"], r["status"]])
+        for r in unconnected:
+            writer.writerow(row(r))
+        writer.writerow([])
+        for r in connected:
+            writer.writerow(row(r))
 
 
 def main():

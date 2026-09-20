@@ -1,4 +1,5 @@
 instance,module,port,direction,width,signal,status
+
 u_cpu,cpu_core,clk,input,1,clk,CONNECTED
 u_cpu,cpu_core,rst_n,input,1,rst_n,CONNECTED
 u_cpu,cpu_core,addr_out,output,[31:0],addr,CONNECTED
