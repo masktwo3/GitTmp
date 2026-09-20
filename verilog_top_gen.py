@@ -37,6 +37,16 @@ wire in full and adds an `assign` statement linking the requested slice of
 that helper wire to the requested slice of the net (net-side slice from
 "bits", defaulting to the LSBs when blank).
 
+To tie part of a net to a fixed value instead of a real port (e.g. tie off
+unused lanes of a packed bus, or a constant status bit), use the special
+instance name "CONST" on a NET row: col3 holds a Verilog literal (such as
+"4'hA" or "1'b1") instead of a port name, and col4 ("bits") is required so
+the generator knows where on the net to place it - a plain
+`assign net[bits] = <literal>;` is emitted, any width (including a single
+bit) at any position. A real single-bit port needs no special handling at
+all: it already places at an arbitrary position the same way any port
+does, via the "bits" column.
+
 Pass --report <path> to also write a CSV listing every instance port and
 its status: UNCONNECTED (no NET row at all), PARTIALLY_DRIVEN (the port
 reads a net that has bits nothing ever drives, e.g. only part of a wide
@@ -53,6 +63,7 @@ import sys
 from dataclasses import dataclass
 
 TOP_INSTANCE = "TOP"
+CONST_INSTANCE = "CONST"
 DIRECTIONS = ("input", "output", "inout")
 
 
@@ -351,8 +362,20 @@ def generate_top(top_name, instances, nets, library):
         return (0, w - 1) if w is not None else None  # unknown: assume full width
 
     for net_name, endpoints in nets.items():
-        internal = [(i, p, nb, pb) for i, p, nb, pb in endpoints if i != TOP_INSTANCE]
+        const_endpoints = [(p, nb, pb) for i, p, nb, pb in endpoints if i == CONST_INSTANCE]
+        internal = [(i, p, nb, pb) for i, p, nb, pb in endpoints
+                    if i not in (TOP_INSTANCE, CONST_INSTANCE)]
         external = [(i, p, nb, pb) for i, p, nb, pb in endpoints if i == TOP_INSTANCE]
+
+        for value, nb, pb in const_endpoints:
+            if not nb:
+                raise ValueError(
+                    "CONST endpoint on net %r (value %r) requires an explicit "
+                    "'bits' column specifying where to place it" % (net_name, value))
+            if pb:
+                raise ValueError(
+                    "CONST endpoint on net %r (value %r): 'port_bits' isn't "
+                    "meaningful for a constant; leave col5 blank" % (net_name, value))
 
         resolved_internal = [(i, p, nb, pb, resolve_port(i, p)) for i, p, nb, pb in internal]
 
@@ -366,7 +389,7 @@ def generate_top(top_name, instances, nets, library):
                     "Endpoint %s.%s: port_bits %r exceeds the port's own width %s "
                     "(%d bits)" % (i, p, pb, port.width or "1 bit", port_bit_count))
 
-        any_bits = any(nb or pb for _, _, nb, pb in internal)
+        any_bits = any(nb or pb for _, _, nb, pb in internal) or bool(const_endpoints)
         distinct_widths = {port.width for _, _, _, _, port in resolved_internal}
 
         if not any_bits and len(distinct_widths) <= 1:
@@ -375,6 +398,7 @@ def generate_top(top_name, instances, nets, library):
             required = [(i, p, nb, pb, port, endpoint_width(nb, pb, port))
                         for i, p, nb, pb, port in resolved_internal]
             numeric_bits = [r for *_, r in required if r is not None]
+            numeric_bits += [parse_bit_range(nb)[1] + 1 for _, nb, _ in const_endpoints]
             if not numeric_bits:
                 raise ValueError(
                     "Net %r mixes port widths that can't be auto-resolved (%s); "
@@ -397,21 +421,23 @@ def generate_top(top_name, instances, nets, library):
 
         drivers = [(i, p, nb, pb, port) for i, p, nb, pb, port in resolved_internal
                    if port.direction in ("output", "inout")]
-        if len(drivers) > 1:
-            ranges = [endpoint_range(nb, pb, port) for _, _, nb, pb, port in drivers]
+        driver_labels = ["%s.%s" % (i, p) for i, p, _, _, _ in drivers]
+        driver_labels += ["CONST(%s)" % value for value, _, _ in const_endpoints]
+        driver_ranges = [endpoint_range(nb, pb, port) for _, _, nb, pb, port in drivers]
+        driver_ranges += [parse_bit_range(nb) for _, nb, _ in const_endpoints]
+        if len(driver_ranges) > 1:
             overlapping = False
-            for a in range(len(ranges)):
-                for c in range(a + 1, len(ranges)):
-                    ra, rc = ranges[a], ranges[c]
+            for a in range(len(driver_ranges)):
+                for c in range(a + 1, len(driver_ranges)):
+                    ra, rc = driver_ranges[a], driver_ranges[c]
                     if ra is None or rc is None or not (ra[1] < rc[0] or ra[0] > rc[1]):
                         overlapping = True
             if overlapping:
-                print("Warning: net %r has multiple driving ports that overlap (%s)"
-                      % (net_name, ", ".join("%s.%s" % (i, p) for i, p, _, _, _ in drivers)),
-                      file=sys.stderr)
+                print("Warning: net %r has multiple drivers that overlap (%s)"
+                      % (net_name, ", ".join(driver_labels)), file=sys.stderr)
 
         net_width_bits = bit_count(width)
-        externally_supplied = bool(external) and not drivers
+        externally_supplied = bool(external) and not drivers and not const_endpoints
         if net_width_bits and not externally_supplied:
             driven_bits = set()
             for _, _, nb, _, _ in drivers:
@@ -419,6 +445,9 @@ def generate_top(top_name, instances, nets, library):
                 # net (verified against iverilog); an explicit net_bits slice
                 # drives only that range.
                 r = parse_bit_range(nb) if nb else (0, net_width_bits - 1)
+                driven_bits.update(range(r[0], r[1] + 1))
+            for _, nb, _ in const_endpoints:
+                r = parse_bit_range(nb)
                 driven_bits.update(range(r[0], r[1] + 1))
             undriven_bits = set(range(net_width_bits)) - driven_bits
             if undriven_bits:
@@ -443,15 +472,23 @@ def generate_top(top_name, instances, nets, library):
                               file=sys.stderr)
 
         if external:
-            direction = drivers[0][4].direction if drivers else "input"
+            if drivers:
+                direction = drivers[0][4].direction
+            elif const_endpoints:
+                direction = "output"
+            else:
+                direction = "input"
             for _, port_name, _, _ in external:
                 top_ports.append(Port(port_name, direction, width))
                 # if multiple TOP endpoints share a net with a different
                 # port name, alias them to the same net_name signal.
-        elif internal:
+        elif internal or const_endpoints:
             # declare a wire even for a single dangling endpoint so the
             # instance can still connect to something.
             wire_decls.append((width, net_name))
+
+        for value, nb, _ in const_endpoints:
+            assign_stmts.append("assign %s = %s;" % (endpoint_expr(net_name, nb), value))
 
         for i, p, nb, pb, port in resolved_internal:
             if not pb:
