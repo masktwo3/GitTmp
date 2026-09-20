@@ -1,0 +1,16 @@
+instance,module,port,direction,width,signal,driven_bits,undriven_bits,status
+
+
+u_cpu,cpu_core,clk,input,1,clk,,,CONNECTED
+u_cpu,cpu_core,rst_n,input,1,rst_n,,,CONNECTED
+u_cpu,cpu_core,addr_out,output,[31:0],addr,,,CONNECTED
+u_cpu,cpu_core,we,output,1,we,,,CONNECTED
+u_cpu,cpu_core,wdata,output,[31:0],wdata,,,CONNECTED
+u_cpu,cpu_core,rdata,input,[31:0],rdata,,,CONNECTED
+u_cpu,cpu_core,status,output,[3:0],status,,,CONNECTED
+u_mem,memory,clk,input,1,clk,,,CONNECTED
+u_mem,memory,rst_n,input,1,rst_n,,,CONNECTED
+u_mem,memory,addr_in,input,[31:0],addr,,,CONNECTED
+u_mem,memory,we,input,1,we,,,CONNECTED
+u_mem,memory,wdata,input,[31:0],wdata,,,CONNECTED
+u_mem,memory,rdata,output,[31:0],rdata,,,CONNECTED
