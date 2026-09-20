@@ -24,7 +24,9 @@ python3 verilog_top_gen.py \
 - `--out`: 출력 파일 경로 (생략 시 표준출력).
 - `--report`: (선택) top 모듈 생성 후, 모든 인스턴스의 모든 포트가 연결됐는지(`CONNECTED`)
   안 됐는지(`UNCONNECTED`)를 확인해 CSV 파일로 저장합니다. 컬럼:
-  `instance,module,port,direction,width,status,signal`. 예시는 `examples/connection_report.csv` 참고.
+  `instance,module,port,direction,width,signal,status` (`status`가 마지막 컬럼).
+  전부 연결된 예시는 `examples/connection_report.csv`, 일부러 몇 개를 빼서
+  `UNCONNECTED`가 나오게 만든 예시는 `examples/unconnected_report/` 참고.
   연결이 안 된 포트가 있으면 콘솔에도 경고가 함께 출력됩니다.
 
 ### 연결정보 CSV 형식
@@ -110,4 +112,4 @@ NET,packed_bus,u_sink,packed_word,
 - 포트가 연결정보에 없으면 경고를 출력하고 빈 연결(`.port()`)로 남겨둡니다.
 
 `examples/` 디렉터리에 동작 예시(`cpu_core.v`, `memory.v`, `connections.csv`,
-`width_mismatch/`, `bus_packing/`)가 포함되어 있습니다.
+`width_mismatch/`, `bus_packing/`, `unconnected_report/`)가 포함되어 있습니다.

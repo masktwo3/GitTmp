@@ -424,10 +424,10 @@ def write_connection_report(report, path):
     """Write a CSV report of every instance port's connection status."""
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["instance", "module", "port", "direction", "width", "status", "signal"])
+        writer.writerow(["instance", "module", "port", "direction", "width", "signal", "status"])
         for r in report:
             writer.writerow([r["instance"], r["module"], r["port"], r["direction"],
-                              r["width"], r["status"], r["signal"]])
+                              r["width"], r["signal"], r["status"]])
 
 
 def main():
@@ -442,7 +442,7 @@ def main():
                      help="Recurse into directories given via --rtl")
     ap.add_argument("--report",
                      help="Write a CSV connection report (instance,module,port,"
-                          "direction,width,status,signal) listing every instance "
+                          "direction,width,signal,status) listing every instance "
                           "port as CONNECTED or UNCONNECTED")
     args = ap.parse_args()
 
