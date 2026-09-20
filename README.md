@@ -54,23 +54,23 @@ python3 verilog_top_gen.py \
 type,col1,col2,col3,col4,col5
 INSTANCE,u_cpu,cpu_core,,,
 INSTANCE,u_mem,memory,,,
-NET,clk,TOP,clk,,
-NET,clk,u_cpu,clk,,
-NET,clk,u_mem,clk,,
-NET,addr,u_cpu,addr_out,,
-NET,addr,u_mem,addr_in,,
+NET,clk,,TOP,clk,
+NET,clk,,u_cpu,clk,
+NET,clk,,u_mem,clk,
+NET,addr,,u_cpu,addr_out,
+NET,addr,,u_mem,addr_in,
 ```
 
 - `INSTANCE` 행: `col1`=인스턴스 이름, `col2`=서브모듈 이름.
-- `NET` 행(일반): `col1`=net(신호) 이름, `col2`=인스턴스 이름(또는 `TOP`), `col3`=포트
-  이름, `col4`=net 쪽 비트 위치 지정(선택), `col5`=포트 쪽 비트 위치 지정(선택). 자세한
-  내용은 아래 "서브모듈 간 signal width가 다른 경우" 참고.
+- `NET` 행: `col1`=net(신호) 이름, `col2`=net 쪽 비트 위치 지정(선택; `CONST`는 필수),
+  `col3`=인스턴스 이름(또는 `TOP`, `CONST`), `col4`=포트 이름(`CONST`일 땐 대신 Verilog
+  상수 literal), `col5`=포트 쪽 비트 위치 지정(선택; `CONST`에는 사용 불가). **위치(`bits`,
+  `col2`)가 항상 먼저 오고, 그다음 출처(인스턴스/포트, 또는 `CONST`/값)가 옵니다** — 모든
+  `NET` 행이 동일한 컬럼 순서를 씁니다. 자세한 내용은 아래 "서브모듈 간 signal width가
+  다른 경우" 참고.
   같은 net 이름을 가진 행들은 서로 연결된 것으로 취급됩니다.
-  `col2`가 `TOP`이면 그 net은 생성되는 top 모듈의 외부 포트로 노출되며,
+  `col3`이 `TOP`이면 그 net은 생성되는 top 모듈의 외부 포트로 노출되며,
   방향(input/output/inout)과 비트 폭은 연결된 서브모듈 포트에서 자동으로 추론됩니다.
-- `NET` 행(상수, 컬럼 순서가 다름): `col1`=net 이름, `col2`=net 쪽 비트 위치(필수),
-  `col3`=`CONST`, `col4`=Verilog 상수 literal. 위치(`bits`)를 먼저 적고 그 다음
-  출처(`CONST`+값)가 오는 순서입니다. 자세한 내용은 아래 "상수 값 끼워 넣기" 참고.
 
 ### 서브모듈 간 signal width가 다른 경우
 
@@ -78,7 +78,7 @@ NET,addr,u_mem,addr_in,,
 
 **1) 기본 동작 (자동 LSB 정렬)**
 
-`col4`(bits)를 비워두면, net은 연결된 포트 중 가장 넓은 폭으로 선언되고, 더 좁은 포트는
+`col2`(bits)를 비워두면, net은 연결된 포트 중 가장 넓은 폭으로 선언되고, 더 좁은 포트는
 그대로(`.port(net)`) 연결됩니다. Verilog 포트 연결 규칙(IEEE 1364/1800)에 따라 시뮬레이터/
 합성 툴이 자동으로 LSB 기준 zero-extend(입력 쪽) 또는 truncate(출력 쪽이 net보다 좁은 경우 그
 값이 net 전체를 zero-extend해서 구동)를 수행합니다. 예: 8비트 `status` 출력을 32비트
@@ -87,17 +87,17 @@ NET,addr,u_mem,addr_in,,
 
 **2) 명시적 비트 위치 지정 (`bits` 컬럼)**
 
-LSB가 아닌 특정 위치(예: 32비트 버스의 상위 바이트)에 신호를 놓고 싶다면 `col4`에
+LSB가 아닌 특정 위치(예: 32비트 버스의 상위 바이트)에 신호를 놓고 싶다면 `col2`에
 `[23:16]`, `[3]`처럼 명시적 part-select를 적어줍니다. 이 값을 쓰는 모든 endpoint(출력 쪽,
 입력 쪽 모두)에 동일한 비트 범위를 지정해야 의도한 대로 연결됩니다. 서로 다른 비트
 범위를 쓰는 여러 출력 포트가 같은 net을 나눠 쓰는 것(버스 패킹)도 가능하며, 이때 범위가
 겹치면 경고가 출력됩니다.
 
 ```csv
-NET,bus,u_src,lane_a,[7:0]
-NET,bus,u_sink,lane_a_in,[7:0]
-NET,bus,u_src,lane_b,[23:16]
-NET,bus,u_sink,lane_b_in,[23:16]
+NET,bus,[7:0],u_src,lane_a,
+NET,bus,[7:0],u_sink,lane_a_in,
+NET,bus,[23:16],u_src,lane_b,
+NET,bus,[23:16],u_sink,lane_b_in,
 ```
 
 `examples/width_mismatch/`에 두 경우 모두를 iverilog로 검증한 예시가 있습니다.
@@ -110,14 +110,14 @@ NET,bus,u_sink,lane_b_in,[23:16]
 읽게 됩니다.
 
 ```csv
-INSTANCE,u_a,sensor_a,,
-INSTANCE,u_b,sensor_b,,
-INSTANCE,u_sink,packed_sink,,
-NET,packed_bus,u_a,temp,[7:0]
-NET,packed_bus,u_b,pressure,[15:8]
-NET,packed_bus,u_a,humidity,[23:16]
-NET,packed_bus,u_b,battery,[31:24]
-NET,packed_bus,u_sink,packed_word,
+INSTANCE,u_a,sensor_a,,,
+INSTANCE,u_b,sensor_b,,,
+INSTANCE,u_sink,packed_sink,,,
+NET,packed_bus,[7:0],u_a,temp,
+NET,packed_bus,[15:8],u_b,pressure,
+NET,packed_bus,[23:16],u_a,humidity,
+NET,packed_bus,[31:24],u_b,battery,
+NET,packed_bus,,u_sink,packed_word,
 ```
 
 `examples/bus_packing/`에서 서로 다른 두 모듈(`sensor_a`, `sensor_b`)의 8비트 출력 4개를
@@ -128,12 +128,12 @@ NET,packed_bus,u_sink,packed_word,
 
 지금까지는 출력 "포트 전체"를 net의 한 구간에 놓는 것만 가능했습니다. 출력 포트 자체가
 넓은 버스이고, 그중 임의의 위치·임의의 폭만 잘라서 쓰고 싶다면 `col5`(`port_bits`)에
-그 포트 자신의 part-select를 적어줍니다. `col4`(`bits`)는 그 조각을 net의 어느 위치에
+그 포트 자신의 part-select를 적어줍니다. `col2`(`bits`)는 그 조각을 net의 어느 위치에
 놓을지를 지정합니다 (비워두면 net의 LSB에 놓입니다).
 
 ```csv
-NET,packed_bus,u_a,data,[15:8],[23:16]
-NET,packed_bus,u_b,data,[27:16],[15:4]
+NET,packed_bus,[15:8],u_a,data,[23:16]
+NET,packed_bus,[27:16],u_b,data,[15:4]
 ```
 
 위 예시는 `u_a.data`(32비트)의 `[23:16]` 8비트를 잘라서 `packed_bus[15:8]`에, `u_b.data`
@@ -162,11 +162,11 @@ wide_src_a u_a (
 **5) 상수 값 끼워 넣기 (`CONST` 인스턴스), 1비트 신호 배치**
 
 net의 일부를 실제 포트가 아니라 고정된 값으로 채우고 싶을 때(예: 버스의 남는 레인을
-0으로 tie-off, 고정된 설정 값, 상수 status 비트)는 일반 `NET` 행과 컬럼 순서가 다릅니다:
-`col2`에 net의 어느 위치에 놓을지(`bits`, 필수)를 먼저 적고, `col3`에 `CONST`,
-`col4`에 Verilog 리터럴을 적습니다 (위치 → 출처 순서). `col5`는 사용하지 않습니다.
-폭은 리터럴 자체가 몇 비트인지(`4'hA`→4비트, `1'b0`→1비트 등)와 무관하게 `bits`로
-지정한 구간이 그대로 net의 그 위치를 구동합니다:
+0으로 tie-off, 고정된 설정 값, 상수 status 비트)는 `col3`(인스턴스 자리)에 `CONST`를,
+`col4`(포트 자리)에 Verilog 리터럴을 적습니다. `col2`(`bits`)는 다른 `NET` 행과 마찬가지로
+위치를 지정하는 자리지만, `CONST`는 값을 어디에 둘지 알 방법이 없으므로 필수입니다.
+`col5`(`port_bits`)는 사용하지 않습니다. 폭은 리터럴 자체가 몇 비트인지(`4'hA`→4비트,
+`1'b0`→1비트 등)와 무관하게 `bits`로 지정한 구간이 그대로 net의 그 위치를 구동합니다:
 
 ```csv
 NET,packed_bus,[31:28],CONST,4'hA,
@@ -178,7 +178,7 @@ NET,packed_bus,[6:0],CONST,7'h55,
 포트 자체가 이미 1비트이므로):
 
 ```csv
-NET,packed_bus,u_flag,flag,[7],
+NET,packed_bus,[7],u_flag,flag,
 ```
 
 `examples/const_and_bit_packing/`에서 4비트 상수(`4'hA` → `[31:28]`), 12비트/8비트
@@ -202,8 +202,7 @@ NET,packed_bus,u_flag,flag,[7],
 - 파라미터화된 폭(예: `[WIDTH-1:0]`)은 숫자로 환산할 수 없으므로, 그런 포트끼리 폭이 다르면
   각 endpoint에 명시적으로 `bits` 또는 `port_bits`를 지정해야 하며, 지정하지 않으면 에러로
   중단됩니다.
-- `CONST` 행은 컬럼 순서가 일반 `NET` 행과 다릅니다 (`col2`=bits, `col3`=`CONST`,
-  `col4`=값). `bits`(`col2`)가 필수이며, 빠지면 에러로 중단됩니다. `port_bits`(`col5`)는
+- `CONST` 행은 `bits`(`col2`)가 필수이며, 빠지면 에러로 중단됩니다. `port_bits`(`col5`)는
   아예 지원하지 않으며 값이 있으면 에러로 중단됩니다.
 - 포트가 연결정보에 없으면 경고를 출력하고 빈 연결(`.port()`)로 남겨둡니다.
 

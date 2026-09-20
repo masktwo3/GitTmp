@@ -3,9 +3,9 @@ INSTANCE,u_a,wide_src_a,,,
 INSTANCE,u_b,wide_src_b,,,
 INSTANCE,u_flag,flag_src,,,
 INSTANCE,u_sink,wide_sink,,,
-NET,packed_bus,u_a,data,[15:8],[23:16]
-NET,packed_bus,u_b,data,[27:16],[15:4]
+NET,packed_bus,[15:8],u_a,data,[23:16]
+NET,packed_bus,[27:16],u_b,data,[15:4]
 NET,packed_bus,[31:28],CONST,4'hA,
-NET,packed_bus,u_flag,flag,[7],
+NET,packed_bus,[7],u_flag,flag,
 NET,packed_bus,[6:0],CONST,7'h55,
-NET,packed_bus,u_sink,packed_word,,
+NET,packed_bus,,u_sink,packed_word,

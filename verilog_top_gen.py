@@ -8,14 +8,15 @@ Usage:
 Connection CSV format (see examples/connections.csv):
     type,col1,col2,col3,col4,col5
     INSTANCE,<instance_name>,<module_name>,,,
-    NET,<net_name>,<instance_name or TOP>,<port_name>,<net bits (optional)>,<port bits (optional)>
+    NET,<net_name>,<net bits (optional)>,<instance name, TOP, or CONST>,<port name, or a literal for CONST>,<port bits (optional)>
 
 - An INSTANCE row declares one submodule instance.
-- A NET row declares one endpoint of a net: which instance/port it attaches to.
-  All NET rows sharing the same net name are tied together.
-  Use instance name "TOP" to expose that endpoint as a port of the generated
-  top module (its direction/width are inferred from the submodule port(s)
-  it connects to).
+- A NET row declares one endpoint of a net: which instance/port it attaches
+  to. The net position (col2, "bits") always comes before the source
+  (col3/col4), for every kind of endpoint. All NET rows sharing the same
+  net name are tied together. Use instance name "TOP" to expose that
+  endpoint as a port of the generated top module (its direction/width are
+  inferred from the submodule port(s) it connects to).
 
 Ports on the same net do not need to be the same width. When they differ,
 the net is declared at the widest connected port's width, and each endpoint
@@ -24,9 +25,8 @@ or truncates a wider one, aligned at the LSB (this is standard IEEE
 1364/1800 port-connection behavior, e.g. an 8-bit output connecting to a
 32-bit input pads the upper 24 bits with 0). To place a signal at specific
 bits of the net instead of the LSB-aligned default (e.g. packing a byte
-into the upper half of a word), set the optional 5th column ("bits", the
-net's own bit range) on that NET row to an explicit part-select such as
-"[23:16]" or "[3]".
+into the upper half of a word), set col2 ("bits", the net's own bit range)
+on that NET row to an explicit part-select such as "[23:16]" or "[3]".
 
 To instead take an arbitrary slice out of a wide port itself (e.g. only
 bits [23:16] of a 32-bit output bus) and place that slice anywhere on the
@@ -40,14 +40,12 @@ that helper wire to the requested slice of the net (net-side slice from
 To tie part of a net to a fixed value instead of a real port (e.g. tie off
 unused lanes of a packed bus, or a constant status bit), write the row as
     NET,<net_name>,<bits>,CONST,<literal>,
-i.e. col2 holds the required net-side bit range (the position comes first
-since a constant has nowhere else to read its placement from), col3 is the
-literal "CONST", and col4 is a Verilog literal (such as "4'hA" or "1'b1")
-in place of a port name. A plain `assign net[bits] = <literal>;` is
-emitted, any width (including a single bit) at any position. A real
-single-bit port needs no special handling at all: it already places at an
-arbitrary position the same way any port does, via the normal
-NET,<net>,<instance>,<port>,<bits> "bits" column.
+col2 holds the required net-side bit range, col3 is the literal "CONST",
+and col4 is a Verilog literal (such as "4'hA" or "1'b1") in place of a
+port name. A plain `assign net[bits] = <literal>;` is emitted, any width
+(including a single bit) at any position. A real single-bit port needs no
+special handling at all: it already places at an arbitrary position the
+same way any port does, via the normal "bits" column (col2).
 
 Pass --report <path> to also write a CSV listing every instance port and
 its status: UNCONNECTED (no NET row at all), PARTIALLY_DRIVEN (the port
@@ -310,18 +308,11 @@ def read_connections(conn_path):
                     raise ValueError("Duplicate instance name: %s" % instance_name)
                 instances[instance_name] = module_name
             elif rtype == "NET":
-                net_name = col1
-                if col3 == CONST_INSTANCE:
-                    # NET,<net>,<bits>,CONST,<value>, - bits leads so the
-                    # net position reads first, then the CONST source.
-                    # col5 is passed through (unused for CONST) so a
-                    # mistaken value there still triggers generate_top's
-                    # "port_bits isn't meaningful for CONST" check.
-                    net_bits, inst_name, value = col2, col3, col4
-                    nets.setdefault(net_name, []).append((inst_name, value, net_bits, col5))
-                else:
-                    inst_name, port_name, net_bits, port_bits = col2, col3, col4, col5
-                    nets.setdefault(net_name, []).append((inst_name, port_name, net_bits, port_bits))
+                # NET,<net>,<bits>,<instance or TOP or CONST>,<port or value>,<port_bits>
+                # The net position (bits) leads, then the source (instance/
+                # port, or CONST/value), uniformly for every NET row.
+                net_name, net_bits, inst_name, port_name, port_bits = col1, col2, col3, col4, col5
+                nets.setdefault(net_name, []).append((inst_name, port_name, net_bits, port_bits))
             else:
                 raise ValueError("Unknown row type: %r" % rtype)
     return instances, nets
