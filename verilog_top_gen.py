@@ -427,13 +427,11 @@ def build_nets(net_rows, instances, library):
         if top_names:
             net_name = top_names[0]
         else:
-            real_ports = sorted({
-                (in_inst, in_port) for in_inst, in_port, *_ in rows
-            } | {
-                (out_inst, out_port) for _, _, _, out_inst, out_port, _ in rows
-                if out_inst not in (TOP_INSTANCE, CONST_INSTANCE)
-            })
-            net_name = "w_%s_%s" % real_ports[0]
+            # Name the wire after the consuming (input-side) port - the
+            # "destination" a bus-packed or fanned-out wire is naturally
+            # identified by - rather than an arbitrary contributing driver.
+            consumer_ports = sorted({(in_inst, in_port) for in_inst, in_port, *_ in rows})
+            net_name = "w_%s_%s" % consumer_ports[0]
         orig_name, suffix = net_name, 2
         while net_name in used_names:
             net_name = "%s_%d" % (orig_name, suffix)
