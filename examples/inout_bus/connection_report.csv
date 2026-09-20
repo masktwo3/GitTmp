@@ -1,0 +1,16 @@
+instance,module,port,direction,width,signal,driven_bits,undriven_bits,status
+
+
+u_a,io_driver,drive_en,input,1,w_u_a_drive_en,,,CONNECTED
+u_a,io_driver,drive_val,input,[7:0],w_u_a_drive_val,,,CONNECTED
+u_a,io_driver,sensed,output,[7:0],w_u_a_sensed,,,CONNECTED
+u_a,io_driver,io,inout,[7:0],shared_bus,,,CONNECTED
+u_b,io_driver,drive_en,input,1,w_u_b_drive_en,,,CONNECTED
+u_b,io_driver,drive_val,input,[7:0],w_u_b_drive_val,,,CONNECTED
+u_b,io_driver,sensed,output,[7:0],w_u_b_sensed,,,CONNECTED
+u_b,io_driver,io,inout,[7:0],shared_bus,,,CONNECTED
+u_mon,io_monitor,io,inout,[7:0],shared_bus,,,CONNECTED
+u_mon,io_monitor,sensed,output,[7:0],w_u_mon_sensed,,,CONNECTED
+u_nib,io_nibble,drive_en,input,1,w_u_nib_drive_en,,,CONNECTED
+u_nib,io_nibble,drive_val,input,[3:0],w_u_nib_drive_val,,,CONNECTED
+u_nib,io_nibble,io_lo,inout,[3:0],shared_bus[3:0],,,CONNECTED
