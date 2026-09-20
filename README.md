@@ -69,11 +69,20 @@ NET,u_mem,addr_in,,u_cpu,addr_out,
   - `col1`이 `TOP`이면 이 연결이 생성되는 top 모듈의 **출력 포트**로 노출되고,
     `col4`가 `TOP`이면 top 모듈의 **입력 포트**로 노출됩니다 (각 방향은 행 위치에서
     바로 결정되며 따로 추론하지 않습니다).
-  - **net 이름을 따로 적지 않아도, 같은 입력 쪽 또는 같은 출력 쪽을 가진 행들은
-    자동으로 하나의 wire로 묶입니다** (아래 참고). 내부 wire 이름은 그 wire를 읽는
-    **입력(소비) 쪽** 인스턴스/포트를 기준으로 `w_<인스턴스>_<포트>` 형태로 자동
-    생성됩니다 (여러 입력이 걸려 있으면 그중 정렬 순서상 첫 번째 것을 사용; 이름은
-    사람이 읽는 용도일 뿐, 실제 동작에는 영향 없음).
+  - **net 이름을 따로 적지 않습니다.** 대신 실제 서브모듈의 **모든 포트가 각자 자기
+    이름을 딴 전용 wire**(`w_<인스턴스>_<포트>`)를 갖고, 그 두 wire 사이를 `assign`
+    한 줄이 이어줍니다. 예를 들어 `u_cpu.addr_out` → `u_mem.addr_in` 연결은:
+    ```verilog
+    wire [31:0] w_u_cpu_addr_out;
+    wire [31:0] w_u_mem_addr_in;
+    assign w_u_mem_addr_in = w_u_cpu_addr_out;
+    cpu_core u_cpu ( .addr_out(w_u_cpu_addr_out), ... );
+    memory  u_mem ( .addr_in(w_u_mem_addr_in), ... );
+    ```
+    처럼 생성됩니다. `TOP`은 이미 그 자체로 모듈 포트(=wire)이므로 별도 wire 없이
+    포트 이름을 그대로 씁니다. `CONST`도 wire 없이 리터럴 값을 assign 오른쪽에 직접
+    씁니다. 팬아웃/버스 패킹 시 여러 행이 같은 포트를 참조하면 그 포트의 wire는 한
+    번만 선언되고 여러 `assign`이 값을 주고받습니다.
 
 **같은 쪽을 반복해서 팬아웃/버스 패킹 표현하기**
 
@@ -98,10 +107,12 @@ NET,u_mem,addr_in,,u_cpu,addr_out,
 
 **1) 기본 동작 (자동 LSB 정렬)**
 
-`col3`(입력 쪽 비트 위치)을 비워두면, 이 연결이 쓰는 wire는 필요한 만큼 가장 넓게
-선언되고, 더 좁은 포트는 그대로(`.port(wire)`) 연결됩니다. Verilog 포트 연결 규칙(IEEE
-1364/1800)에 따라 시뮬레이터/합성 툴이 자동으로 LSB 기준 zero-extend(입력 쪽) 또는
-truncate를 수행합니다. 예: 8비트 `status` 출력을 32비트 `status_word` 입력에 연결하면
+`col3`(입력 쪽 비트 위치)을 비워두면, 입력 포트의 전용 wire와 출력 포트의 전용 wire를
+폭이 다르더라도 그냥 `assign w_입력 = w_출력;`으로 통째로 잇습니다. Verilog의 대입 규칙
+(IEEE 1364/1800)에 따라 시뮬레이터/합성 툴이 자동으로 LSB 기준 zero-extend(더 좁은
+쪽 → 더 넓은 쪽) 또는 truncate(더 넓은 쪽 → 더 좁은 쪽)를 수행합니다. 예: 8비트
+`status` 출력을 32비트 `status_word` 입력에 연결하면
+`assign w_u_sink_status_word = w_u_src_status;`가 생성되고, 이는
 `status_word = {24'b0, status}`와 동일하게 동작합니다. 이 경우 스크립트가 경고를
 출력하지만 에러로 중단하지는 않습니다.
 
@@ -152,16 +163,15 @@ NET,u_sink,packed_word,[27:16],u_b,data,[15:4]
 놓습니다.
 
 Verilog는 인스턴스 연결에서 포트 이름 자체를 슬라이스할 수 없기 때문에(`.data[23:16](...)`
-같은 문법은 불가), 출력 쪽 비트가 지정되면 스크립트가 자동으로 내부 helper wire를 만들어
-포트 전체를 거기 연결한 뒤, `assign`문으로 helper wire의 지정된 구간과 연결의 지정된 구간을
-이어줍니다:
+같은 문법은 불가), 어차피 모든 실제 포트가 자기 전용 wire(`w_u_a_data`)를 갖고 있다는 점을
+그대로 활용합니다 — `assign`문에서 그 wire의 원하는 구간만 꺼내 쓰면 됩니다:
 
 ```verilog
-wire [31:0] __slice_u_a_data;
-assign w_u_sink_packed_word[15:8] = __slice_u_a_data[23:16];
+wire [31:0] w_u_a_data;
+assign w_u_sink_packed_word[15:8] = w_u_a_data[23:16];
 
 wide_src_a u_a (
-    .data(__slice_u_a_data)
+    .data(w_u_a_data)
 );
 ```
 
