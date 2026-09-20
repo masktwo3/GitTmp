@@ -26,6 +26,10 @@ or truncates a wider one, aligned at the LSB (this is standard IEEE
 bits of the net instead of the LSB-aligned default (e.g. packing a byte
 into the upper half of a word), set the optional 5th column ("bits") on
 that NET row to an explicit part-select such as "[23:16]" or "[3]".
+
+Pass --report <path> to also write a CSV listing every instance port and
+whether it ended up CONNECTED or UNCONNECTED, for reviewing the result of
+a connection run.
 """
 import argparse
 import csv
@@ -384,6 +388,7 @@ def generate_top(top_name, instances, nets, library):
             lines.append("    " + re.sub(r"\s+", " ", decl))
         lines.append("")
 
+    report = []
     for inst_name, module_name in instances.items():
         ports = library.get(module_name)
         if ports is None:
@@ -392,17 +397,37 @@ def generate_top(top_name, instances, nets, library):
         conn_lines = []
         for port in ports:
             sig = conn_signal.get((inst_name, port.name))
-            if sig is None:
+            connected = sig is not None
+            if not connected:
                 print("Warning: %s.%s (instance %s) is unconnected"
                       % (module_name, port.name, inst_name), file=sys.stderr)
                 sig = ""
+            report.append({
+                "instance": inst_name,
+                "module": module_name,
+                "port": port.name,
+                "direction": port.direction,
+                "width": port.width or "1",
+                "status": "CONNECTED" if connected else "UNCONNECTED",
+                "signal": sig,
+            })
             conn_lines.append("        .%s(%s)" % (port.name, sig))
         lines.append(",\n".join(conn_lines))
         lines.append("    );")
         lines.append("")
 
     lines.append("endmodule")
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines) + "\n", report
+
+
+def write_connection_report(report, path):
+    """Write a CSV report of every instance port's connection status."""
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["instance", "module", "port", "direction", "width", "status", "signal"])
+        for r in report:
+            writer.writerow([r["instance"], r["module"], r["port"], r["direction"],
+                              r["width"], r["status"], r["signal"]])
 
 
 def main():
@@ -415,11 +440,15 @@ def main():
     ap.add_argument("--out", help="Output .v file (default: stdout)")
     ap.add_argument("--recursive", action="store_true",
                      help="Recurse into directories given via --rtl")
+    ap.add_argument("--report",
+                     help="Write a CSV connection report (instance,module,port,"
+                          "direction,width,status,signal) listing every instance "
+                          "port as CONNECTED or UNCONNECTED")
     args = ap.parse_args()
 
     library = load_module_library(args.rtl, args.recursive)
     instances, nets = read_connections(args.conn)
-    verilog = generate_top(args.top_name, instances, nets, library)
+    verilog, report = generate_top(args.top_name, instances, nets, library)
 
     if args.out:
         with open(args.out, "w") as f:
@@ -427,6 +456,12 @@ def main():
         print("Wrote %s" % args.out, file=sys.stderr)
     else:
         sys.stdout.write(verilog)
+
+    if args.report:
+        write_connection_report(report, args.report)
+        unconnected = sum(1 for r in report if r["status"] == "UNCONNECTED")
+        print("Wrote %s (%d/%d ports unconnected)"
+              % (args.report, unconnected, len(report)), file=sys.stderr)
 
 
 if __name__ == "__main__":

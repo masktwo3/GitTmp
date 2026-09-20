@@ -12,7 +12,8 @@ python3 verilog_top_gen.py \
     --rtl examples/cpu_core.v examples/memory.v \
     --conn examples/connections.csv \
     --top-name top \
-    --out top.v
+    --out top.v \
+    --report connection_report.csv
 ```
 
 - `--rtl`: 서브모듈이 들어있는 `.v`/`.sv` 파일 또는 디렉터리 (여러 개 지정 가능).
@@ -21,6 +22,10 @@ python3 verilog_top_gen.py \
 - `--conn`: 연결정보 CSV 파일.
 - `--top-name`: 생성될 top 모듈 이름 (기본값 `top`).
 - `--out`: 출력 파일 경로 (생략 시 표준출력).
+- `--report`: (선택) top 모듈 생성 후, 모든 인스턴스의 모든 포트가 연결됐는지(`CONNECTED`)
+  안 됐는지(`UNCONNECTED`)를 확인해 CSV 파일로 저장합니다. 컬럼:
+  `instance,module,port,direction,width,status,signal`. 예시는 `examples/connection_report.csv` 참고.
+  연결이 안 된 포트가 있으면 콘솔에도 경고가 함께 출력됩니다.
 
 ### 연결정보 CSV 형식
 
