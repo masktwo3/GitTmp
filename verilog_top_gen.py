@@ -6,51 +6,55 @@ Usage:
         --top-name top --out top.v
 
 Connection CSV format (see examples/connections.csv):
-    type,col1,col2,col3,col4,col5
-    INSTANCE,<instance_name>,<module_name>,,,
-    NET,<net_name>,<net bits (optional)>,<instance name, TOP, or CONST>,<port name, or a literal for CONST>,<port bits (optional)>
+    type,col1,col2,col3,col4,col5,col6
+    INSTANCE,<instance_name>,<module_name>,,,,
+    NET,<in_instance or TOP>,<in_port>,<in_bits (optional)>,<out_instance, TOP, or CONST>,<out_port, or a literal for CONST>,<out_bits (optional)>
 
 - An INSTANCE row declares one submodule instance.
-- A NET row declares one endpoint of a net: which instance/port it attaches
-  to. The net position (col2, "bits") always comes before the source
-  (col3/col4), for every kind of endpoint. All NET rows sharing the same
-  net name are tied together. Use instance name "TOP" to expose that
-  endpoint as a port of the generated top module (its direction/width are
-  inferred from the submodule port(s) it connects to).
+- A NET row declares one point-to-point connection: the input (consuming)
+  side is col1-col3, the output (driving) side is col4-col6. There is no
+  net-name column - a wire is derived automatically. Two rows are tied onto
+  the same wire whenever they share the same input side (fan-in / bus
+  packing: several different drivers each feeding a different bit range of
+  one input port) or the same output side (fan-out: one driver feeding
+  several different inputs) - repeat the row with the matching side
+  unchanged to express either. Use instance name "TOP" on the input side to
+  expose that connection as an output port of the generated top module, or
+  on the output side to expose it as an input port (both directions are
+  inferred/validated the same as before).
 
-Ports on the same net do not need to be the same width. When they differ,
-the net is declared at the widest connected port's width, and each endpoint
-is connected as-is: Verilog automatically zero-extends a narrower connection
-or truncates a wider one, aligned at the LSB (this is standard IEEE
-1364/1800 port-connection behavior, e.g. an 8-bit output connecting to a
-32-bit input pads the upper 24 bits with 0). To place a signal at specific
-bits of the net instead of the LSB-aligned default (e.g. packing a byte
-into the upper half of a word), set col2 ("bits", the net's own bit range)
-on that NET row to an explicit part-select such as "[23:16]" or "[3]".
+Ports on either side do not need to be the same width. When they differ,
+the derived wire is sized to the widest connected requirement, and each
+endpoint connects as-is: Verilog automatically zero-extends a narrower
+connection or truncates a wider one, aligned at the LSB (standard IEEE
+1364/1800 port-connection behavior). To place a connection at a specific
+position of the (possibly shared) wire instead of the LSB-aligned default,
+set col3 ("in_bits") to an explicit part-select such as "[23:16]" or "[3]" -
+this is what every row sharing an input side must set (to distinct,
+non-overlapping ranges) for bus packing to land each contribution
+correctly.
 
-To instead take an arbitrary slice out of a wide port itself (e.g. only
-bits [23:16] of a 32-bit output bus) and place that slice anywhere on the
-net, set the optional 6th column ("port_bits") to that port-side part-select.
-Verilog can't slice a formal port name in an instance connection, so when
-"port_bits" is given the generator connects the port to an internal helper
-wire in full and adds an `assign` statement linking the requested slice of
-that helper wire to the requested slice of the net (net-side slice from
-"bits", defaulting to the LSBs when blank).
+To instead take an arbitrary slice out of a wide *output* port itself
+(e.g. only bits [23:16] of a 32-bit output bus), set col6 ("out_bits") to
+that output-side part-select. Verilog can't slice a formal port name in an
+instance connection, so when "out_bits" is given the generator connects
+that port to an internal helper wire in full and adds an `assign`
+statement linking the requested slice of that helper wire to the
+connection's position (from "in_bits", defaulting to the LSBs when blank).
 
-To tie part of a net to a fixed value instead of a real port (e.g. tie off
-unused lanes of a packed bus, or a constant status bit), write the row as
-    NET,<net_name>,<bits>,CONST,<literal>,
-col2 holds the required net-side bit range, col3 is the literal "CONST",
-and col4 is a Verilog literal (such as "4'hA" or "1'b1") in place of a
-port name. A plain `assign net[bits] = <literal>;` is emitted, any width
-(including a single bit) at any position. A real single-bit port needs no
-special handling at all: it already places at an arbitrary position the
-same way any port does, via the normal "bits" column (col2).
+To tie a connection to a fixed value instead of a real output port (e.g.
+tie off unused lanes of a packed bus, or a constant status bit), use the
+special instance name "CONST" on the output side: col5 holds a Verilog
+literal (such as "4'hA" or "1'b1") instead of a port name. col3
+("in_bits") is then required, since a constant has nowhere else to read
+its placement from. A real single-bit port needs no special handling at
+all: it already places at an arbitrary position the same way any port
+does, via the normal "in_bits" column.
 
 Pass --report <path> to also write a CSV listing every instance port and
 its status: UNCONNECTED (no NET row at all), PARTIALLY_DRIVEN (the port
 reads a net that has bits nothing ever drives, e.g. only part of a wide
-bus is fed by "bits"/"port_bits" endpoints elsewhere), or CONNECTED.
+bus is fed by "in_bits"/"out_bits" endpoints elsewhere), or CONNECTED.
 UNCONNECTED and PARTIALLY_DRIVEN ports are listed first, then a blank
 line, then fully CONNECTED ports.
 """
@@ -289,8 +293,12 @@ def load_module_library(rtl_paths, recursive):
 
 
 def read_connections(conn_path):
+    """Read INSTANCE rows and raw point-to-point NET rows from the
+    connection CSV. Returns (instances, net_rows) where net_rows is a list
+    of (in_inst, in_port, in_bits, out_inst, out_port, out_bits) tuples -
+    one row per NET line, not yet grouped into wires (see build_nets)."""
     instances = {}   # instance_name -> module_name
-    nets = {}         # net_name -> [(instance_or_TOP, port_name, net_bits, port_bits), ...]
+    net_rows = []
     with open(conn_path, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
@@ -302,20 +310,162 @@ def read_connections(conn_path):
             col3 = (row.get("col3") or "").strip()
             col4 = (row.get("col4") or "").strip()
             col5 = (row.get("col5") or "").strip()
+            col6 = (row.get("col6") or "").strip()
             if rtype == "INSTANCE":
                 instance_name, module_name = col1, col2
                 if instance_name in instances:
                     raise ValueError("Duplicate instance name: %s" % instance_name)
                 instances[instance_name] = module_name
             elif rtype == "NET":
-                # NET,<net>,<bits>,<instance or TOP or CONST>,<port or value>,<port_bits>
-                # The net position (bits) leads, then the source (instance/
-                # port, or CONST/value), uniformly for every NET row.
-                net_name, net_bits, inst_name, port_name, port_bits = col1, col2, col3, col4, col5
-                nets.setdefault(net_name, []).append((inst_name, port_name, net_bits, port_bits))
+                # NET,<in_inst or TOP>,<in_port>,<in_bits>,<out_inst, TOP, or CONST>,<out_port or literal>,<out_bits>
+                in_inst, in_port, in_bits, out_inst, out_port, out_bits = (
+                    col1, col2, col3, col4, col5, col6)
+                if not in_inst or not in_port:
+                    raise ValueError("NET row is missing its input instance/port: %r" % (row,))
+                if not out_inst or not out_port:
+                    raise ValueError("NET row is missing its output instance/port: %r" % (row,))
+                if in_inst == CONST_INSTANCE:
+                    raise ValueError(
+                        "CONST can only be used on the output (driving) side of "
+                        "a NET row, not the input side: %r" % (row,))
+                net_rows.append((in_inst, in_port, in_bits, out_inst, out_port, out_bits))
             else:
                 raise ValueError("Unknown row type: %r" % rtype)
-    return instances, nets
+    return instances, net_rows
+
+
+class _UnionFind:
+    """Minimal disjoint-set-union over arbitrary hashable keys."""
+
+    def __init__(self):
+        self._parent = {}
+
+    def find(self, x):
+        self._parent.setdefault(x, x)
+        while self._parent[x] != x:
+            self._parent[x] = self._parent[self._parent[x]]
+            x = self._parent[x]
+        return x
+
+    def union(self, a, b):
+        ra, rb = self.find(a), self.find(b)
+        if ra != rb:
+            self._parent[ra] = rb
+
+
+def build_nets(net_rows, instances, library):
+    """Group point-to-point NET rows into wires by shared endpoint identity
+    (same input side -> fan-in/bus-packing; same output side -> fan-out),
+    and translate each group into the net_name -> [(inst, port, net_bits,
+    port_bits), ...] shape generate_top() already consumes."""
+
+    def resolve(inst, port):
+        if inst in (TOP_INSTANCE, CONST_INSTANCE):
+            return None
+        module_name = instances.get(inst)
+        if module_name is None:
+            raise ValueError("NET row references unknown instance %r" % inst)
+        ports = library.get(module_name)
+        if ports is None:
+            raise ValueError("Module %r (instance %r) not found in RTL library"
+                              % (module_name, inst))
+        for p in ports:
+            if p.name == port:
+                return p
+        raise ValueError("Module %r has no port %r (instance %r)"
+                          % (module_name, port, inst))
+
+    def consumer_key(in_inst, in_port):
+        return ("TOP", in_port) if in_inst == TOP_INSTANCE else ("PORT", in_inst, in_port)
+
+    def producer_key(out_inst, out_port, out_bits):
+        if out_inst == CONST_INSTANCE:
+            return None
+        if out_inst == TOP_INSTANCE:
+            return ("TOP", out_port, out_bits)
+        return ("PORT", out_inst, out_port, out_bits)
+
+    dsu = _UnionFind()
+    for in_inst, in_port, in_bits, out_inst, out_port, out_bits in net_rows:
+        ckey = consumer_key(in_inst, in_port)
+        pkey = producer_key(out_inst, out_port, out_bits)
+        if pkey is not None:
+            dsu.union(ckey, pkey)
+        else:
+            dsu.find(ckey)
+
+    groups = {}
+    for row in net_rows:
+        in_inst, in_port = row[0], row[1]
+        root = dsu.find(consumer_key(in_inst, in_port))
+        groups.setdefault(root, []).append(row)
+
+    nets = {}
+    used_names = set()
+    for rows in groups.values():
+        for in_inst, in_port, in_bits, out_inst, out_port, out_bits in rows:
+            if in_inst != TOP_INSTANCE:
+                p = resolve(in_inst, in_port)
+                if p.direction == "output":
+                    raise ValueError(
+                        "%s.%s is declared 'output' in the RTL but is used on "
+                        "the input side of a NET row" % (in_inst, in_port))
+            if out_inst not in (TOP_INSTANCE, CONST_INSTANCE):
+                p = resolve(out_inst, out_port)
+                if p.direction == "input":
+                    raise ValueError(
+                        "%s.%s is declared 'input' in the RTL but is used on "
+                        "the output side of a NET row" % (out_inst, out_port))
+
+        top_names = []
+        for in_inst, in_port, in_bits, out_inst, out_port, out_bits in rows:
+            if in_inst == TOP_INSTANCE and in_port not in top_names:
+                top_names.append(in_port)
+            if out_inst == TOP_INSTANCE and out_port not in top_names:
+                top_names.append(out_port)
+
+        if top_names:
+            net_name = top_names[0]
+        else:
+            real_ports = sorted({
+                (in_inst, in_port) for in_inst, in_port, *_ in rows
+            } | {
+                (out_inst, out_port) for _, _, _, out_inst, out_port, _ in rows
+                if out_inst not in (TOP_INSTANCE, CONST_INSTANCE)
+            })
+            net_name = "w_%s_%s" % real_ports[0]
+        orig_name, suffix = net_name, 2
+        while net_name in used_names:
+            net_name = "%s_%d" % (orig_name, suffix)
+            suffix += 1
+        used_names.add(net_name)
+
+        endpoints = []
+        seen_top = set()
+
+        consumer_bits = {}
+        for in_inst, in_port, in_bits, out_inst, out_port, out_bits in rows:
+            if in_inst == TOP_INSTANCE:
+                if in_port not in seen_top:
+                    endpoints.append((TOP_INSTANCE, in_port, "", ""))
+                    seen_top.add(in_port)
+                continue
+            consumer_bits.setdefault((in_inst, in_port), set()).add(in_bits)
+        for (ci, cp), bitsset in consumer_bits.items():
+            nb = next(iter(bitsset)) if len(bitsset) == 1 else ""
+            endpoints.append((ci, cp, nb, ""))
+
+        for in_inst, in_port, in_bits, out_inst, out_port, out_bits in rows:
+            if out_inst == TOP_INSTANCE:
+                if out_port not in seen_top:
+                    endpoints.append((TOP_INSTANCE, out_port, "", ""))
+                    seen_top.add(out_port)
+            else:
+                endpoints.append((out_inst, out_port, in_bits, out_bits))
+
+        nets[net_name] = endpoints
+
+    return nets
 
 
 def generate_top(top_name, instances, nets, library):
@@ -621,7 +771,8 @@ def main():
     args = ap.parse_args()
 
     library = load_module_library(args.rtl, args.recursive)
-    instances, nets = read_connections(args.conn)
+    instances, net_rows = read_connections(args.conn)
+    nets = build_nets(net_rows, instances, library)
     verilog, report = generate_top(args.top_name, instances, nets, library)
 
     if args.out:

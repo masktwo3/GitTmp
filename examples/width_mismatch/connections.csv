@@ -1,9 +1,6 @@
-type,col1,col2,col3,col4,col5
-INSTANCE,u_src,byte_src,,,
-INSTANCE,u_sink,word_sink,,,
-NET,status_net,,u_src,status,
-NET,status_net,,u_sink,status_word,
-NET,bus,[7:0],u_src,lane_a,
-NET,bus,[7:0],u_sink,lane_a_in,
-NET,bus,[23:16],u_src,lane_b,
-NET,bus,[23:16],u_sink,lane_b_in,
+type,col1,col2,col3,col4,col5,col6
+INSTANCE,u_src,byte_src,,,,
+INSTANCE,u_sink,word_sink,,,,
+NET,u_sink,status_word,,u_src,status,
+NET,u_sink,lane_a_in,,u_src,lane_a,
+NET,u_sink,lane_b_in,,u_src,lane_b,

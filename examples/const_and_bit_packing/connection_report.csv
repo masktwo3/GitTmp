@@ -3,5 +3,5 @@ instance,module,port,direction,width,signal,driven_bits,undriven_bits,status
 
 u_a,wide_src_a,data,output,[31:0],__slice_u_a_data,,,CONNECTED
 u_b,wide_src_b,data,output,[31:0],__slice_u_b_data,,,CONNECTED
-u_flag,flag_src,flag,output,1,packed_bus[7],,,CONNECTED
-u_sink,wide_sink,packed_word,input,[31:0],packed_bus,,,CONNECTED
+u_flag,flag_src,flag,output,1,w_u_a_data[7],,,CONNECTED
+u_sink,wide_sink,packed_word,input,[31:0],w_u_a_data,,,CONNECTED
