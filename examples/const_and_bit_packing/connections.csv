@@ -5,7 +5,7 @@ INSTANCE,u_flag,flag_src,,,
 INSTANCE,u_sink,wide_sink,,,
 NET,packed_bus,u_a,data,[15:8],[23:16]
 NET,packed_bus,u_b,data,[27:16],[15:4]
-NET,packed_bus,CONST,4'hA,[31:28],
+NET,packed_bus,[31:28],CONST,4'hA,
 NET,packed_bus,u_flag,flag,[7],
-NET,packed_bus,CONST,7'h55,[6:0],
+NET,packed_bus,[6:0],CONST,7'h55,
 NET,packed_bus,u_sink,packed_word,,

@@ -38,14 +38,16 @@ that helper wire to the requested slice of the net (net-side slice from
 "bits", defaulting to the LSBs when blank).
 
 To tie part of a net to a fixed value instead of a real port (e.g. tie off
-unused lanes of a packed bus, or a constant status bit), use the special
-instance name "CONST" on a NET row: col3 holds a Verilog literal (such as
-"4'hA" or "1'b1") instead of a port name, and col4 ("bits") is required so
-the generator knows where on the net to place it - a plain
-`assign net[bits] = <literal>;` is emitted, any width (including a single
-bit) at any position. A real single-bit port needs no special handling at
-all: it already places at an arbitrary position the same way any port
-does, via the "bits" column.
+unused lanes of a packed bus, or a constant status bit), write the row as
+    NET,<net_name>,<bits>,CONST,<literal>,
+i.e. col2 holds the required net-side bit range (the position comes first
+since a constant has nowhere else to read its placement from), col3 is the
+literal "CONST", and col4 is a Verilog literal (such as "4'hA" or "1'b1")
+in place of a port name. A plain `assign net[bits] = <literal>;` is
+emitted, any width (including a single bit) at any position. A real
+single-bit port needs no special handling at all: it already places at an
+arbitrary position the same way any port does, via the normal
+NET,<net>,<instance>,<port>,<bits> "bits" column.
 
 Pass --report <path> to also write a CSV listing every instance port and
 its status: UNCONNECTED (no NET row at all), PARTIALLY_DRIVEN (the port
@@ -308,8 +310,18 @@ def read_connections(conn_path):
                     raise ValueError("Duplicate instance name: %s" % instance_name)
                 instances[instance_name] = module_name
             elif rtype == "NET":
-                net_name, inst_name, port_name, net_bits, port_bits = col1, col2, col3, col4, col5
-                nets.setdefault(net_name, []).append((inst_name, port_name, net_bits, port_bits))
+                net_name = col1
+                if col3 == CONST_INSTANCE:
+                    # NET,<net>,<bits>,CONST,<value>, - bits leads so the
+                    # net position reads first, then the CONST source.
+                    # col5 is passed through (unused for CONST) so a
+                    # mistaken value there still triggers generate_top's
+                    # "port_bits isn't meaningful for CONST" check.
+                    net_bits, inst_name, value = col2, col3, col4
+                    nets.setdefault(net_name, []).append((inst_name, value, net_bits, col5))
+                else:
+                    inst_name, port_name, net_bits, port_bits = col2, col3, col4, col5
+                    nets.setdefault(net_name, []).append((inst_name, port_name, net_bits, port_bits))
             else:
                 raise ValueError("Unknown row type: %r" % rtype)
     return instances, nets

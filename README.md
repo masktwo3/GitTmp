@@ -62,13 +62,15 @@ NET,addr,u_mem,addr_in,,
 ```
 
 - `INSTANCE` 행: `col1`=인스턴스 이름, `col2`=서브모듈 이름.
-- `NET` 행: `col1`=net(신호) 이름, `col2`=인스턴스 이름(또는 `TOP`, `CONST`), `col3`=포트
-  이름(`CONST`일 땐 대신 Verilog 상수 literal), `col4`=net 쪽 비트 위치 지정(선택,
-  `CONST`는 필수), `col5`=포트 쪽 비트 위치 지정(선택, `CONST`에는 사용 불가). 자세한
+- `NET` 행(일반): `col1`=net(신호) 이름, `col2`=인스턴스 이름(또는 `TOP`), `col3`=포트
+  이름, `col4`=net 쪽 비트 위치 지정(선택), `col5`=포트 쪽 비트 위치 지정(선택). 자세한
   내용은 아래 "서브모듈 간 signal width가 다른 경우" 참고.
   같은 net 이름을 가진 행들은 서로 연결된 것으로 취급됩니다.
   `col2`가 `TOP`이면 그 net은 생성되는 top 모듈의 외부 포트로 노출되며,
   방향(input/output/inout)과 비트 폭은 연결된 서브모듈 포트에서 자동으로 추론됩니다.
+- `NET` 행(상수, 컬럼 순서가 다름): `col1`=net 이름, `col2`=net 쪽 비트 위치(필수),
+  `col3`=`CONST`, `col4`=Verilog 상수 literal. 위치(`bits`)를 먼저 적고 그 다음
+  출처(`CONST`+값)가 오는 순서입니다. 자세한 내용은 아래 "상수 값 끼워 넣기" 참고.
 
 ### 서브모듈 간 signal width가 다른 경우
 
@@ -160,15 +162,15 @@ wide_src_a u_a (
 **5) 상수 값 끼워 넣기 (`CONST` 인스턴스), 1비트 신호 배치**
 
 net의 일부를 실제 포트가 아니라 고정된 값으로 채우고 싶을 때(예: 버스의 남는 레인을
-0으로 tie-off, 고정된 설정 값, 상수 status 비트)는 인스턴스 이름 자리에 `CONST`를 쓰고
-`col3`에 Verilog 리터럴을, `col4`(`bits`)에 net의 어느 위치에 놓을지를 적습니다.
-`CONST` 행은 `bits`가 필수이고(값을 어디에 둘지 알 수 없으므로), `port_bits`(`col5`)는
-쓸 수 없습니다. 폭은 리터럴 자체가 몇 비트인지(`4'hA`→4비트, `1'b0`→1비트 등)와 무관하게
-`bits`로 지정한 구간이 그대로 net의 그 위치를 구동합니다:
+0으로 tie-off, 고정된 설정 값, 상수 status 비트)는 일반 `NET` 행과 컬럼 순서가 다릅니다:
+`col2`에 net의 어느 위치에 놓을지(`bits`, 필수)를 먼저 적고, `col3`에 `CONST`,
+`col4`에 Verilog 리터럴을 적습니다 (위치 → 출처 순서). `col5`는 사용하지 않습니다.
+폭은 리터럴 자체가 몇 비트인지(`4'hA`→4비트, `1'b0`→1비트 등)와 무관하게 `bits`로
+지정한 구간이 그대로 net의 그 위치를 구동합니다:
 
 ```csv
-NET,packed_bus,CONST,4'hA,[31:28],
-NET,packed_bus,CONST,7'h55,[6:0],
+NET,packed_bus,[31:28],CONST,4'hA,
+NET,packed_bus,[6:0],CONST,7'h55,
 ```
 
 한편 **1비트짜리 실제 신호**(포트 자체가 1비트인 경우)는 별도 기능 없이 기존 `bits`
@@ -200,7 +202,8 @@ NET,packed_bus,u_flag,flag,[7],
 - 파라미터화된 폭(예: `[WIDTH-1:0]`)은 숫자로 환산할 수 없으므로, 그런 포트끼리 폭이 다르면
   각 endpoint에 명시적으로 `bits` 또는 `port_bits`를 지정해야 하며, 지정하지 않으면 에러로
   중단됩니다.
-- `CONST` 행은 `bits`(`col4`)가 필수이며, 빠지면 에러로 중단됩니다. `port_bits`(`col5`)는
+- `CONST` 행은 컬럼 순서가 일반 `NET` 행과 다릅니다 (`col2`=bits, `col3`=`CONST`,
+  `col4`=값). `bits`(`col2`)가 필수이며, 빠지면 에러로 중단됩니다. `port_bits`(`col5`)는
   아예 지원하지 않으며 값이 있으면 에러로 중단됩니다.
 - 포트가 연결정보에 없으면 경고를 출력하고 빈 연결(`.port()`)로 남겨둡니다.
 
