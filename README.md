@@ -74,6 +74,28 @@ NET,bus,u_sink,lane_b_in,[23:16]
 
 `examples/width_mismatch/`에 두 경우 모두를 iverilog로 검증한 예시가 있습니다.
 
+**3) 버스 패킹: 여러 출력 버스를 모아 하나의 넓은 입력 버스로 연결**
+
+서로 다른(혹은 같은) 인스턴스의 여러 출력 포트를 `bits`로 각각 겹치지 않는 위치에 배치하고,
+받는 쪽은 하나의 넓은 입력 포트로 net 전체를 그대로(`bits` 없이) 읽으면 각 출력이 자동으로
+해당 비트 구간을 담당하는 다중 드라이버로 조립되어, 입력 쪽에서는 합쳐진 전체 값을 그대로
+읽게 됩니다.
+
+```csv
+INSTANCE,u_a,sensor_a,,
+INSTANCE,u_b,sensor_b,,
+INSTANCE,u_sink,packed_sink,,
+NET,packed_bus,u_a,temp,[7:0]
+NET,packed_bus,u_b,pressure,[15:8]
+NET,packed_bus,u_a,humidity,[23:16]
+NET,packed_bus,u_b,battery,[31:24]
+NET,packed_bus,u_sink,packed_word,
+```
+
+`examples/bus_packing/`에서 서로 다른 두 모듈(`sensor_a`, `sensor_b`)의 8비트 출력 4개를
+32비트 버스의 각 바이트 레인에 배치하고, `packed_sink`가 이를 하나의 32비트 입력으로 그대로
+읽어 `packed_word=44332211`이 나오는 것을 iverilog로 확인했습니다.
+
 ### 제한 사항
 
 - `bits`로 지정한 범위와 포트 자체의 폭이 다르면(예: 8비트 포트에 `[15:0]` 지정), 그 부분은
@@ -83,4 +105,4 @@ NET,bus,u_sink,lane_b_in,[23:16]
 - 포트가 연결정보에 없으면 경고를 출력하고 빈 연결(`.port()`)로 남겨둡니다.
 
 `examples/` 디렉터리에 동작 예시(`cpu_core.v`, `memory.v`, `connections.csv`,
-`width_mismatch/`)가 포함되어 있습니다.
+`width_mismatch/`, `bus_packing/`)가 포함되어 있습니다.
