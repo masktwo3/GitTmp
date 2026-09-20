@@ -52,6 +52,20 @@ its placement from. A real single-bit port needs no special handling at
 all: it already places at an arbitrary position the same way any port
 does, via the normal "in_bits" column.
 
+If either side of a NET row names a port declared "inout" in the RTL, the
+row is treated as a bidirectional tie rather than a one-way connection:
+`assign` can't model that (a continuous driver only pushes one direction),
+so instead every endpoint that needs to share one physical net - both
+sides of one row, and transitively every row that reuses one of those
+endpoints - is connected directly to a single shared wire (or straight to
+the TOP port, if one is in the group), with no assign and no separate
+per-port wire. This means both real ports on either side of an inout row
+must themselves be declared "inout" (an inout can't be tied to a plain
+input/output port), CONST can't drive one, and col6 ("out_bits") isn't
+supported (only whole-port structural connections are); col3 ("in_bits")
+may still be used on the input side to place a narrower inout port at a
+specific position within a wider shared net.
+
 Pass --report <path> to also write a CSV listing every instance port and
 its status: UNCONNECTED (no NET row at all), PARTIALLY_DRIVEN (the port
 reads a net that has bits nothing ever drives, e.g. only part of a wide
@@ -328,6 +342,29 @@ def read_connections(conn_path):
     return instances, net_rows
 
 
+class _InoutUnionFind:
+    """Tiny union-find used only to group 'inout' endpoints that must share
+    one physical wire (assign-based bridging can't preserve bidirectional
+    flow, unlike input/output nets, so this narrow case needs real grouping)."""
+
+    def __init__(self):
+        self.parent = {}
+
+    def find(self, x):
+        self.parent.setdefault(x, x)
+        root = x
+        while self.parent[root] != root:
+            root = self.parent[root]
+        while self.parent[x] != root:
+            self.parent[x], x = root, self.parent[x]
+        return root
+
+    def union(self, a, b):
+        ra, rb = self.find(a), self.find(b)
+        if ra != rb:
+            self.parent[ra] = rb
+
+
 def generate_top(top_name, instances, net_rows, library):
     top_ports = []       # list of Port for the generated module header
     wire_decls = []       # list of (width, wire_name)
@@ -365,6 +402,119 @@ def generate_top(top_name, instances, net_rows, library):
             declared_ports.add(key)
             conn_signal[key] = wname
         return wname
+
+    # --- pass 0: inout connections -- shared bidirectional wire, no assign ---
+    # An 'inout' port can't be safely wired via assign (a continuous driver
+    # only pushes one direction, breaking bidirectional flow), so instead we
+    # group every endpoint that must share one physical net and connect all
+    # of them directly to that single wire (or straight to the TOP port, if
+    # one is in the group) -- no dedicated per-port wire, no assign.
+    inout_rows, other_rows = [], []
+    for row in net_rows:
+        in_inst, in_port, in_bits, out_inst, out_port, out_bits = row
+        in_is_inout = (in_inst != TOP_INSTANCE
+                       and resolve_port(in_inst, in_port).direction == "inout")
+        out_is_inout = (out_inst not in (TOP_INSTANCE, CONST_INSTANCE)
+                         and resolve_port(out_inst, out_port).direction == "inout")
+        if not (in_is_inout or out_is_inout):
+            other_rows.append(row)
+            continue
+        if out_inst == CONST_INSTANCE:
+            raise ValueError(
+                "%s.%s is an 'inout' port; CONST cannot drive an inout "
+                "connection" % (in_inst, in_port))
+        if in_inst != TOP_INSTANCE and not in_is_inout:
+            raise ValueError(
+                "%s.%s is declared '%s' but this NET row ties it to an "
+                "inout port; both real ports in an inout connection must "
+                "be declared 'inout'"
+                % (in_inst, in_port, resolve_port(in_inst, in_port).direction))
+        if out_inst not in (TOP_INSTANCE, CONST_INSTANCE) and not out_is_inout:
+            raise ValueError(
+                "%s.%s is declared '%s' but this NET row ties it to an "
+                "inout port; both real ports in an inout connection must "
+                "be declared 'inout'"
+                % (out_inst, out_port, resolve_port(out_inst, out_port).direction))
+        if out_bits:
+            raise ValueError(
+                "NET row %r: output-side bits (col6) isn't supported for an "
+                "inout connection (only whole-port structural connections "
+                "are supported); place a narrower port within the shared "
+                "net via the input-side 'bits' column instead" % (row,))
+        inout_rows.append(row)
+    net_rows = other_rows
+
+    def inout_key(inst, port):
+        return ("TOP", port) if inst == TOP_INSTANCE else ("PORT", inst, port)
+
+    inout_uf = _InoutUnionFind()
+    inout_position = {}   # endpoint_key -> (lo, hi) requested via in_bits
+    for in_inst, in_port, in_bits, out_inst, out_port, out_bits in inout_rows:
+        in_key = inout_key(in_inst, in_port)
+        out_key = inout_key(out_inst, out_port)
+        inout_uf.union(in_key, out_key)
+        if in_bits and in_inst != TOP_INSTANCE:
+            rng = parse_bit_range(in_bits)
+            prev = inout_position.get(in_key)
+            if prev is not None and prev != rng:
+                raise ValueError(
+                    "%s.%s: conflicting inout bit placements %s vs %s"
+                    % (in_inst, in_port, rng, prev))
+            inout_position[in_key] = rng
+
+    inout_groups = {}
+    for in_inst, in_port, _, out_inst, out_port, _ in inout_rows:
+        for inst, port in ((in_inst, in_port), (out_inst, out_port)):
+            key = inout_key(inst, port)
+            inout_groups.setdefault(inout_uf.find(key), set()).add(key)
+
+    for members in inout_groups.values():
+        top_members = sorted(k[1] for k in members if k[0] == "TOP")
+        if len(top_members) > 1:
+            raise ValueError(
+                "An inout net cannot be exposed as more than one TOP port "
+                "(found: %s)" % ", ".join(top_members))
+        port_members = sorted(k for k in members if k[0] == "PORT")
+
+        widths = {k: (bit_count(resolve_port(k[1], k[2]).width) or 1) for k in port_members}
+        canonical_width = max(
+            [widths[k] for k in port_members]
+            + [inout_position[k][1] + 1 for k in port_members if k in inout_position],
+            default=1)
+        width_str = "[%d:0]" % (canonical_width - 1) if canonical_width > 1 else ""
+
+        if top_members:
+            canonical_signal = top_members[0]
+            top_ports.append(Port(canonical_signal, "inout", width_str))
+        else:
+            _, anchor_inst, anchor_port = port_members[0]
+            canonical_signal = "w_%s_%s" % (anchor_inst, anchor_port)
+            wire_decls.append((width_str, canonical_signal))
+
+        for key in port_members:
+            _, inst, port = key
+            own_width = widths[key]
+            if key in inout_position:
+                lo, hi = inout_position[key]
+                if hi - lo + 1 != own_width:
+                    raise ValueError(
+                        "%s.%s: inout bit placement %s must span exactly "
+                        "its own width (%d bits)"
+                        % (inst, port, format_bit_set(range(lo, hi + 1)), own_width))
+                bits_str = "[%d]" % hi if hi == lo else "[%d:%d]" % (hi, lo)
+                sig = "%s%s" % (canonical_signal, bits_str)
+            elif own_width == canonical_width:
+                sig = canonical_signal
+            else:
+                sig = "%s[%d:0]" % (canonical_signal, own_width - 1)
+                print("Warning: %s.%s (inout, %d bits) auto-connects to the "
+                      "low %d bits of the shared %d-bit inout net %s; add an "
+                      "explicit input-side 'bits' column to control "
+                      "placement instead"
+                      % (inst, port, own_width, own_width, canonical_width, canonical_signal),
+                      file=sys.stderr)
+            conn_signal[(inst, port)] = sig
+            declared_ports.add((inst, port))
 
     # --- pass 1: TOP ports fed by something inside (out_inst == TOP) ---
     top_as_producer = {}
