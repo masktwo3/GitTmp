@@ -428,9 +428,14 @@ def generate_top(top_name, instances, nets, library):
                     r = endpoint_range(nb, pb, port)
                     if r is None:
                         continue
-                    gap = set(range(r[0], r[1] + 1)) & undriven_bits
+                    read_bits = set(range(r[0], r[1] + 1))
+                    gap = read_bits & undriven_bits
                     if gap:
-                        partial_driven[(i, p)] = format_bit_set(gap)
+                        driven_part = read_bits - gap
+                        partial_driven[(i, p)] = (
+                            format_bit_set(driven_part) if driven_part else "",
+                            format_bit_set(gap),
+                        )
                         module_name = instances.get(i, "?")
                         print("Warning: %s.%s (instance %s) reads net %r but bit(s) %s "
                               "of it are never driven"
@@ -501,6 +506,7 @@ def generate_top(top_name, instances, nets, library):
         for port in ports:
             sig = conn_signal.get((inst_name, port.name))
             connected = sig is not None
+            driven_bits_desc = undriven_bits_desc = ""
             if not connected:
                 print("Warning: %s.%s (instance %s) is unconnected"
                       % (module_name, port.name, inst_name), file=sys.stderr)
@@ -508,6 +514,7 @@ def generate_top(top_name, instances, nets, library):
                 status = "UNCONNECTED"
             elif (inst_name, port.name) in partial_driven:
                 status = "PARTIALLY_DRIVEN"
+                driven_bits_desc, undriven_bits_desc = partial_driven[(inst_name, port.name)]
             else:
                 status = "CONNECTED"
             report.append({
@@ -518,6 +525,8 @@ def generate_top(top_name, instances, nets, library):
                 "width": port.width or "1",
                 "status": status,
                 "signal": sig,
+                "driven_bits": driven_bits_desc,
+                "undriven_bits": undriven_bits_desc,
             })
             conn_lines.append("        .%s(%s)" % (port.name, sig))
         lines.append(",\n".join(conn_lines))
@@ -529,12 +538,13 @@ def generate_top(top_name, instances, nets, library):
 
 
 def write_connection_report(report, path):
-    """Write a CSV report of every instance port's connection status, listing
-    problem ports (UNCONNECTED, then PARTIALLY_DRIVEN) first, then a blank
-    line, then fully CONNECTED ports."""
+    """Write a CSV report of every instance port's connection status, in
+    three blocks separated by a blank line: UNCONNECTED, PARTIALLY_DRIVEN
+    (with the driven/undriven bit ranges it reads), then CONNECTED."""
     def row(r):
         return [r["instance"], r["module"], r["port"], r["direction"],
-                r["width"], r["signal"], r["status"]]
+                r["width"], r["signal"], r["driven_bits"], r["undriven_bits"],
+                r["status"]]
 
     unconnected = [r for r in report if r["status"] == "UNCONNECTED"]
     partially_driven = [r for r in report if r["status"] == "PARTIALLY_DRIVEN"]
@@ -542,9 +552,11 @@ def write_connection_report(report, path):
 
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["instance", "module", "port", "direction", "width", "signal", "status"])
+        writer.writerow(["instance", "module", "port", "direction", "width", "signal",
+                          "driven_bits", "undriven_bits", "status"])
         for r in unconnected:
             writer.writerow(row(r))
+        writer.writerow([])
         for r in partially_driven:
             writer.writerow(row(r))
         writer.writerow([])
