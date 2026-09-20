@@ -1,0 +1,1 @@
+Warning: wide_sink.packed_word (instance u_sink) reads w_u_sink_packed_word but bit(s) [7:0],[31:28] of it are never driven
