@@ -22,14 +22,26 @@ python3 verilog_top_gen.py \
 - `--conn`: 연결정보 CSV 파일.
 - `--top-name`: 생성될 top 모듈 이름 (기본값 `top`).
 - `--out`: 출력 파일 경로 (생략 시 표준출력).
-- `--report`: (선택) top 모듈 생성 후, 모든 인스턴스의 모든 포트가 연결됐는지(`CONNECTED`)
-  안 됐는지(`UNCONNECTED`)를 확인해 CSV 파일로 저장합니다. 컬럼:
-  `instance,module,port,direction,width,signal,status` (`status`가 마지막 컬럼).
-  파일 안에서는 헤더 다음 **미연결(UNCONNECTED) 포트 목록 → 빈 줄 → 연결(CONNECTED)
-  포트 목록** 순서로 작성되어, 미연결 포트를 파일 맨 위에서 바로 확인할 수 있습니다.
+- `--report`: (선택) top 모듈 생성 후, 모든 인스턴스의 모든 포트 상태를 CSV 파일로
+  저장합니다. 컬럼: `instance,module,port,direction,width,signal,status`
+  (`status`가 마지막 컬럼). `status`는 세 가지 중 하나입니다:
+  - `UNCONNECTED`: 그 포트를 가리키는 `NET` 행이 아예 없음.
+  - `PARTIALLY_DRIVEN`: 포트는 어떤 net에 연결돼 있지만(`.port(net)`), 그 net(또는
+    이 포트가 읽는 net의 구간) 중 실제로 아무도 구동(assign)하지 않는 비트가 있어서
+    시뮬레이션에서 그 비트가 `z`로 뜨는 경우. 예를 들어 `bits`/`port_bits`로 버스의
+    일부 레인만 채우고 나머지 레인은 채우지 않았는데, 그 net을 통째로 읽는 입력
+    포트가 있을 때 발생합니다.
+  - `CONNECTED`: 포트가 연결돼 있고, 이 포트가 읽는 범위는 전부 구동됨.
+
+  파일 안에서는 헤더 다음 **문제가 있는 포트(UNCONNECTED → PARTIALLY_DRIVEN) →
+  빈 줄 → 정상 연결(CONNECTED) 포트** 순서로 작성되어, 문제 포트를 파일 맨 위에서
+  바로 확인할 수 있습니다.
   전부 연결된 예시는 `examples/connection_report.csv`, 일부러 몇 개를 빼서
-  `UNCONNECTED`가 나오게 만든 예시는 `examples/unconnected_report/` 참고.
-  연결이 안 된 포트가 있으면 콘솔에도 경고가 함께 출력됩니다.
+  `UNCONNECTED`가 나오게 만든 예시는 `examples/unconnected_report/`,
+  `PARTIALLY_DRIVEN`이 나오는 예시는 `examples/port_bits_packing/connection_report.csv`
+  참고 (`wide_sink.packed_word`가 `packed_bus`의 `[7:0]`, `[31:28]` 비트가
+  구동되지 않아 `PARTIALLY_DRIVEN`으로 표시됩니다).
+  문제가 있는 포트가 있으면 콘솔에도 경고가 함께 출력됩니다.
 
 ### 연결정보 CSV 형식
 

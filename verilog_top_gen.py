@@ -38,9 +38,11 @@ that helper wire to the requested slice of the net (net-side slice from
 "bits", defaulting to the LSBs when blank).
 
 Pass --report <path> to also write a CSV listing every instance port and
-whether it ended up CONNECTED or UNCONNECTED, for reviewing the result of
-a connection run. UNCONNECTED ports are listed first, then a blank line,
-then CONNECTED ports.
+its status: UNCONNECTED (no NET row at all), PARTIALLY_DRIVEN (the port
+reads a net that has bits nothing ever drives, e.g. only part of a wide
+bus is fed by "bits"/"port_bits" endpoints elsewhere), or CONNECTED.
+UNCONNECTED and PARTIALLY_DRIVEN ports are listed first, then a blank
+line, then fully CONNECTED ports.
 """
 import argparse
 import csv
@@ -93,6 +95,22 @@ def bits_spec_width(bits_spec):
     blank spec."""
     r = parse_bit_range(bits_spec)
     return (r[1] - r[0] + 1) if r else None
+
+
+def format_bit_set(bits):
+    """Compact '[hi:lo],[hi:lo],...' description of a set of bit indices."""
+    bits = sorted(bits)
+    runs = []
+    start = prev = bits[0]
+    for b in bits[1:]:
+        if b == prev + 1:
+            prev = b
+            continue
+        runs.append((start, prev))
+        start = prev = b
+    runs.append((start, prev))
+    return ",".join("[%d]" % lo if lo == hi else "[%d:%d]" % (hi, lo)
+                     for lo, hi in runs)
 
 
 def strip_comments(text):
@@ -307,6 +325,7 @@ def generate_top(top_name, instances, nets, library):
 
     assign_stmts = []      # list of Verilog "assign ...;" statement strings
     shadow_declared = set()  # (instance, port) pairs already given a helper wire
+    partial_driven = {}      # (instance, port) -> format_bit_set() of undriven bits it reads
 
     def endpoint_expr(signal_base, net_bits):
         return "%s%s" % (signal_base, net_bits) if net_bits else signal_base
@@ -391,6 +410,33 @@ def generate_top(top_name, instances, nets, library):
                       % (net_name, ", ".join("%s.%s" % (i, p) for i, p, _, _, _ in drivers)),
                       file=sys.stderr)
 
+        net_width_bits = bit_count(width)
+        externally_supplied = bool(external) and not drivers
+        if net_width_bits and not externally_supplied:
+            driven_bits = set()
+            for _, _, nb, _, _ in drivers:
+                # A bare (no net_bits) driver zero-extends to cover the whole
+                # net (verified against iverilog); an explicit net_bits slice
+                # drives only that range.
+                r = parse_bit_range(nb) if nb else (0, net_width_bits - 1)
+                driven_bits.update(range(r[0], r[1] + 1))
+            undriven_bits = set(range(net_width_bits)) - driven_bits
+            if undriven_bits:
+                for i, p, nb, pb, port in resolved_internal:
+                    if port.direction == "output":
+                        continue
+                    r = endpoint_range(nb, pb, port)
+                    if r is None:
+                        continue
+                    gap = set(range(r[0], r[1] + 1)) & undriven_bits
+                    if gap:
+                        partial_driven[(i, p)] = format_bit_set(gap)
+                        module_name = instances.get(i, "?")
+                        print("Warning: %s.%s (instance %s) reads net %r but bit(s) %s "
+                              "of it are never driven"
+                              % (module_name, p, i, net_name, format_bit_set(gap)),
+                              file=sys.stderr)
+
         if external:
             direction = drivers[0][4].direction if drivers else "input"
             for _, port_name, _, _ in external:
@@ -459,13 +505,18 @@ def generate_top(top_name, instances, nets, library):
                 print("Warning: %s.%s (instance %s) is unconnected"
                       % (module_name, port.name, inst_name), file=sys.stderr)
                 sig = ""
+                status = "UNCONNECTED"
+            elif (inst_name, port.name) in partial_driven:
+                status = "PARTIALLY_DRIVEN"
+            else:
+                status = "CONNECTED"
             report.append({
                 "instance": inst_name,
                 "module": module_name,
                 "port": port.name,
                 "direction": port.direction,
                 "width": port.width or "1",
-                "status": "CONNECTED" if connected else "UNCONNECTED",
+                "status": status,
                 "signal": sig,
             })
             conn_lines.append("        .%s(%s)" % (port.name, sig))
@@ -479,18 +530,22 @@ def generate_top(top_name, instances, nets, library):
 
 def write_connection_report(report, path):
     """Write a CSV report of every instance port's connection status, listing
-    UNCONNECTED ports first, then a blank line, then CONNECTED ports."""
+    problem ports (UNCONNECTED, then PARTIALLY_DRIVEN) first, then a blank
+    line, then fully CONNECTED ports."""
     def row(r):
         return [r["instance"], r["module"], r["port"], r["direction"],
                 r["width"], r["signal"], r["status"]]
 
     unconnected = [r for r in report if r["status"] == "UNCONNECTED"]
+    partially_driven = [r for r in report if r["status"] == "PARTIALLY_DRIVEN"]
     connected = [r for r in report if r["status"] == "CONNECTED"]
 
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["instance", "module", "port", "direction", "width", "signal", "status"])
         for r in unconnected:
+            writer.writerow(row(r))
+        for r in partially_driven:
             writer.writerow(row(r))
         writer.writerow([])
         for r in connected:
@@ -527,8 +582,9 @@ def main():
     if args.report:
         write_connection_report(report, args.report)
         unconnected = sum(1 for r in report if r["status"] == "UNCONNECTED")
-        print("Wrote %s (%d/%d ports unconnected)"
-              % (args.report, unconnected, len(report)), file=sys.stderr)
+        partially_driven = sum(1 for r in report if r["status"] == "PARTIALLY_DRIVEN")
+        print("Wrote %s (%d/%d ports unconnected, %d partially driven)"
+              % (args.report, unconnected, len(report), partially_driven), file=sys.stderr)
 
 
 if __name__ == "__main__":
